@@ -96,29 +96,46 @@ void loop() {
 void advertiseData(int percentage, float voltage) {
   // Stop advertising if already running
   Bluefruit.Advertising.stop();
-  
+
   // Clear advertising data
   Bluefruit.Advertising.clearData();
-  
+
   // Set advertising flags
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
-  
-  // Add device name
-  Bluefruit.Advertising.addName();
-  
-  // Create manufacturer data packet with battery info
-  // Format: [Company ID (2 bytes)][Battery % (1 byte)][Voltage in mV (2 bytes)]
-  uint8_t mfgData[5];
+
+  // Build extended 8-byte manufacturer data packet:
+  // data[0]  battery percent (0-100)
+  // data[1]  voltage low byte  (millivolts, little-endian)
+  // data[2]  voltage high byte
+  // data[3]  flags: bit0=configured, bits1-2=device type, bits3-4=battery chemistry
+  // data[4]  group ID (0=no group)
+  // data[5]  cell count
+  // data[6]  shutter count low byte
+  // data[7]  shutter count high byte
+  //
+  // Packet layout: [Company ID low][Company ID high][data[0]..data[7]]
+  uint8_t mfgData[10];
   mfgData[0] = 0xFF; // Company ID low byte (0xFFFF = test/development)
   mfgData[1] = 0xFF; // Company ID high byte
   mfgData[2] = (uint8_t)percentage; // Battery percentage (0-100)
-  
+
   // Convert voltage to millivolts and split into 2 bytes
   uint16_t voltageMillivolts = (uint16_t)(voltage * 1000);
   mfgData[3] = voltageMillivolts & 0xFF;        // Low byte
   mfgData[4] = (voltageMillivolts >> 8) & 0xFF; // High byte
-  
-  Bluefruit.Advertising.addData(BLE_GAP_AD_TYPE_MANUFACTURER_SPECIFIC_DATA, mfgData, 5);
+
+  // Extended fields (Phase 1: hardcoded defaults; Phase 2: read from flash)
+  mfgData[5] = 0x00; // flags: not configured (bit0=0), battery monitor (bits1-2=0), LiPo (bits3-4=0)
+  mfgData[6] = 0x00; // group ID: no group
+  mfgData[7] = 0x01; // cell count: 1
+  mfgData[8] = 0x00; // shutter count low byte
+  mfgData[9] = 0x00; // shutter count high byte
+
+  Bluefruit.Advertising.addData(BLE_GAP_AD_TYPE_MANUFACTURER_SPECIFIC_DATA, mfgData, 10);
+
+  // Device name goes in the scan response to keep the advertising packet within 31 bytes
+  Bluefruit.ScanResponse.clearData();
+  Bluefruit.ScanResponse.addName();
   
   // Fast advertising interval for quick discovery (in units of 0.625ms)
   Bluefruit.Advertising.setInterval(32, 32); // 20ms interval

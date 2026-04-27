@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,8 +34,10 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -54,9 +57,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.ivlabs.batterymonitor.ui.theme.BatteryMonitorTheme
+
+// ---------------------------------------------------------------------------
+// Domain model
+// ---------------------------------------------------------------------------
+
+enum class DeviceType { BATTERY_MONITOR, CAMERA, STROBE }
+enum class BatteryChemistry { LIPO, LIFEPO4, NIMH, ALKALINE }
 
 data class BleDevice(
     val address: String,
@@ -64,8 +77,59 @@ data class BleDevice(
     val batteryPercent: Int,
     val voltageMillivolts: Int,
     val rssi: Int,
-    val lastSeen: Long
+    val lastSeen: Long,
+    // Extended fields parsed from the 8-byte advertisement payload
+    val isConfigured: Boolean = false,
+    val deviceType: DeviceType = DeviceType.BATTERY_MONITOR,
+    val batteryChemistry: BatteryChemistry = BatteryChemistry.LIPO,
+    val cellCount: Int = 1,
+    val groupId: Int = 0,        // 0 = no group
+    val shutterCount: Int = 0    // camera only
 )
+
+// ---------------------------------------------------------------------------
+// Scan list model
+// ---------------------------------------------------------------------------
+
+sealed class ScanListItem {
+    data class UnconfiguredDevice(val device: BleDevice) : ScanListItem()
+    data class Group(
+        val groupId: Int,
+        val groupName: String?,   // null in Phase 1 (name comes from GATT in Phase 2)
+        val devices: List<BleDevice>
+    ) : ScanListItem()
+    data class IndividualDevice(val device: BleDevice) : ScanListItem()
+}
+
+fun buildScanList(devices: List<BleDevice>): List<ScanListItem> {
+    val unconfigured = devices
+        .filter { !it.isConfigured }
+        .map { ScanListItem.UnconfiguredDevice(it) }
+
+    val configured = devices.filter { it.isConfigured }
+
+    val grouped = configured
+        .filter { it.groupId != 0 }
+        .groupBy { it.groupId }
+        .map { (id, devs) ->
+            ScanListItem.Group(
+                groupId = id,
+                groupName = null,   // Phase 2: read from GATT
+                devices = devs.sortedBy { it.name ?: it.address }
+            )
+        }
+
+    val individual = configured
+        .filter { it.groupId == 0 }
+        .sortedByDescending { it.rssi }
+        .map { ScanListItem.IndividualDevice(it) }
+
+    return unconfigured + grouped + individual
+}
+
+// ---------------------------------------------------------------------------
+// Activity
+// ---------------------------------------------------------------------------
 
 class MainActivity : ComponentActivity() {
 
@@ -114,7 +178,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             BatteryMonitorTheme {
                 BleMonitorScreen(
-                    devices = devices.values.sortedByDescending { it.rssi },
+                    scanItems = buildScanList(devices.values.toList()),
                     isScanning = isScanning,
                     onToggleScan = ::toggleScanning,
                     onSaveName = ::saveDeviceName,
@@ -136,26 +200,63 @@ class MainActivity : ComponentActivity() {
         val batteryPercent = data[0].toInt() and 0xFF
         val voltageMillivolts = ((data[2].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
 
+        val isConfigured: Boolean
+        val deviceType: DeviceType
+        val batteryChemistry: BatteryChemistry
+        val cellCount: Int
+        val groupId: Int
+        val shutterCount: Int
+
+        if (data.size >= 8) {
+            val flags = data[3].toInt() and 0xFF
+            isConfigured = (flags and 0x01) != 0
+            deviceType = when ((flags shr 1) and 0x03) {
+                1    -> DeviceType.CAMERA
+                2    -> DeviceType.STROBE
+                else -> DeviceType.BATTERY_MONITOR
+            }
+            batteryChemistry = when ((flags shr 3) and 0x03) {
+                1    -> BatteryChemistry.LIFEPO4
+                2    -> BatteryChemistry.NIMH
+                3    -> BatteryChemistry.ALKALINE
+                else -> BatteryChemistry.LIPO
+            }
+            groupId      = data[4].toInt() and 0xFF
+            cellCount    = data[5].toInt() and 0xFF
+            shutterCount = ((data[7].toInt() and 0xFF) shl 8) or (data[6].toInt() and 0xFF)
+        } else {
+            // Legacy 3-byte devices: treat as unconfigured battery monitors
+            isConfigured    = false
+            deviceType      = DeviceType.BATTERY_MONITOR
+            batteryChemistry = BatteryChemistry.LIPO
+            cellCount       = 1
+            groupId         = 0
+            shutterCount    = 0
+        }
+
         val device = BleDevice(
-            address = result.device.address,
-            name = result.scanRecord?.deviceName,
-            batteryPercent = batteryPercent,
+            address          = result.device.address,
+            name             = result.scanRecord?.deviceName,
+            batteryPercent   = batteryPercent,
             voltageMillivolts = voltageMillivolts,
-            rssi = result.rssi,
-            lastSeen = System.currentTimeMillis()
+            rssi             = result.rssi,
+            lastSeen         = System.currentTimeMillis(),
+            isConfigured     = isConfigured,
+            deviceType       = deviceType,
+            batteryChemistry = batteryChemistry,
+            cellCount        = cellCount,
+            groupId          = groupId,
+            shutterCount     = shutterCount
         )
         runOnUiThread { devices[device.address] = device }
     }
 
     private fun saveDeviceName(device: BleDevice, name: String) {
-        // TODO: Connect to device via BLE GATT and write the new name to a writable characteristic.
-        // The firmware needs a custom GATT service with a characteristic that persists the name
-        // to EEPROM/flash. UUIDs to be defined once firmware specs are confirmed.
+        // TODO Phase 2: connect via GATT and write device name characteristic
     }
 
     private fun resetDevice(device: BleDevice) {
-        // TODO: Send reset command to device via BLE GATT or UART.
-        // Implementation pending firmware specs (pin signal or UART message - TBD).
+        // TODO Phase 2: send factory reset command via GATT
     }
 
     private fun hasPermissions(): Boolean {
@@ -199,15 +300,20 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Screens
+// ---------------------------------------------------------------------------
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BleMonitorScreen(
-    devices: List<BleDevice>,
+    scanItems: List<ScanListItem>,
     isScanning: Boolean,
     onToggleScan: () -> Unit,
     onSaveName: (BleDevice, String) -> Unit,
     onReset: (BleDevice) -> Unit
 ) {
+    // Phase 1: only individual configured devices open the detail sheet
     var selectedDevice by remember { mutableStateOf<BleDevice?>(null) }
 
     Scaffold(
@@ -223,36 +329,64 @@ fun BleMonitorScreen(
             }
         }
     ) { innerPadding ->
-        if (devices.isEmpty()) {
-            Box(
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.loso_logo),
+                contentDescription = null,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = if (isScanning) "Scanning for devices..." else "Tap \u25B6 to start scanning",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(devices, key = { it.address }) { device ->
-                    DeviceCard(
-                        device = device,
-                        onClick = { selectedDevice = device }
+                    .fillMaxSize(0.9f)
+                    .align(Alignment.Center),
+                contentScale = ContentScale.Fit,
+                alpha = 0.08f
+            )
+            if (scanItems.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (isScanning) "Scanning for devices…" else "Tap \u25B6 to start scanning",
+                        style = MaterialTheme.typography.bodyLarge
                     )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(
+                        items = scanItems,
+                        key = { item ->
+                            when (item) {
+                                is ScanListItem.UnconfiguredDevice -> "unc_${item.device.address}"
+                                is ScanListItem.Group              -> "group_${item.groupId}"
+                                is ScanListItem.IndividualDevice   -> "ind_${item.device.address}"
+                            }
+                        }
+                    ) { item ->
+                        when (item) {
+                            is ScanListItem.UnconfiguredDevice ->
+                                UnconfiguredDeviceCard(device = item.device)
+                            is ScanListItem.Group ->
+                                GroupCard(group = item)
+                            is ScanListItem.IndividualDevice ->
+                                IndividualDeviceCard(
+                                    device = item.device,
+                                    onClick = { selectedDevice = item.device }
+                                )
+                        }
+                    }
                 }
             }
         }
     }
 
+    // Detail sheet for individually-configured devices (Phase 1 read-only view)
     selectedDevice?.let { device ->
         DeviceDetailSheet(
             device = device,
@@ -269,6 +403,198 @@ fun BleMonitorScreen(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Card composables
+// ---------------------------------------------------------------------------
+
+@Composable
+fun UnconfiguredDeviceCard(device: BleDevice) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(text = "\u2699", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "Unconfigured Device",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "MAC: ${device.address}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+                Text(
+                    text = "Signal: ${device.rssi} dBm",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+            }
+            Text(
+                text = "Setup \u2192",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+        }
+    }
+}
+
+@Composable
+fun GroupCard(group: ScanListItem.Group) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = group.groupName ?: "Group ${group.groupId}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "\u2192",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            group.devices.forEachIndexed { index, device ->
+                DeviceRow(device = device)
+                if (index < group.devices.lastIndex) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DeviceRow(device: BleDevice) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = when (device.deviceType) {
+                        DeviceType.CAMERA -> "\uD83D\uDCF7"  // 📷
+                        DeviceType.STROBE -> "\uD83D\uDCA1"  // 💡
+                        else              -> "\uD83D\uDD0B"  // 🔋
+                    },
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(
+            text = device.name ?: device.address,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
+        LinearProgressIndicator(
+            progress = { device.batteryPercent / 100f },
+            modifier = Modifier.weight(2f),
+            color = batteryColor(device.batteryPercent)
+        )
+        Text(
+            text = "${device.batteryPercent}%",
+            style = MaterialTheme.typography.bodySmall,
+            color = batteryColor(device.batteryPercent)
+        )
+        if (device.batteryPercent < 20) {
+            Text(text = "\u26A0", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = when (device.deviceType) {
+                        DeviceType.CAMERA -> "\uD83D\uDCF7"  // 📷
+                        DeviceType.STROBE -> "\uD83D\uDCA1"  // 💡
+                        else              -> "\uD83D\uDD0B"  // 🔋
+                    },
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = device.name ?: device.address,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                Text(
+                    text = "${device.batteryPercent}%",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = batteryColor(device.batteryPercent)
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { device.batteryPercent / 100f },
+                modifier = Modifier.fillMaxWidth(),
+                color = batteryColor(device.batteryPercent)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "${"%.3f".format(device.voltageMillivolts / 1000f)}V",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    text = "${device.rssi} dBm",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            if (device.name != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = device.address,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Detail sheet (Phase 1 placeholder; replaced by DeviceScreen in Phase 2)
+// ---------------------------------------------------------------------------
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceDetailSheet(
@@ -277,7 +603,6 @@ fun DeviceDetailSheet(
     onSaveName: (String) -> Unit,
     onReset: () -> Unit
 ) {
-    // remember keyed on address so the field resets when a different device is opened
     var nameInput by remember(device.address) { mutableStateOf(device.name ?: "") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -330,63 +655,13 @@ fun DeviceDetailSheet(
     }
 }
 
-@Composable
-fun DeviceCard(device: BleDevice, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = device.name ?: device.address,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = "${device.batteryPercent}%",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = batteryColor(device.batteryPercent)
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            LinearProgressIndicator(
-                progress = { device.batteryPercent / 100f },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "${"%.3f".format(device.voltageMillivolts / 1000f)}V",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Text(
-                    text = "${device.rssi} dBm",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-            if (device.name != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = device.address,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 @Composable
 private fun batteryColor(percent: Int): Color = when {
     percent > 50 -> MaterialTheme.colorScheme.primary
     percent > 20 -> MaterialTheme.colorScheme.tertiary
-    else -> MaterialTheme.colorScheme.error
+    else         -> MaterialTheme.colorScheme.error
 }
