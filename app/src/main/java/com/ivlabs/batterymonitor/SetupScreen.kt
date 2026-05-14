@@ -48,8 +48,8 @@ fun SetupScreen(
     var nameInput  by remember { mutableStateOf("") }
     var typeInput  by remember { mutableStateOf(DeviceType.BATTERY_MONITOR) }
     var chemInput  by remember { mutableStateOf(BatteryChemistry.LIPO) }
-    var cellInput  by remember { mutableStateOf("1") }
-    var groupInput by remember { mutableStateOf("0") }
+    var cellInput  by remember { mutableStateOf(1) }
+    var groupInput by remember { mutableStateOf(0) }
     var saveStatus by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
@@ -115,19 +115,9 @@ fun SetupScreen(
                             displayName = BatteryChemistry::displayName
                         )
 
-                        NumberField(
-                            label = "Cell Count (1–8)",
-                            value = cellInput,
-                            onValueChange = { cellInput = it },
-                            maxDigits = 1
-                        )
+                        CellCountDropdown(cellInput) { cellInput = it }
 
-                        NumberField(
-                            label = "Group ID (0 = no group)",
-                            value = groupInput,
-                            onValueChange = { groupInput = it },
-                            maxDigits = 3
-                        )
+                        GroupDropdown(groupInput) { groupInput = it }
                     }
                 }
             }
@@ -172,14 +162,14 @@ private suspend fun writeSetupSettings(
     name: String,
     type: DeviceType,
     chemistry: BatteryChemistry,
-    cellCount: String,
-    groupId: String
+    cellCount: Int,
+    groupId: Int
 ): Boolean {
     if (gattManager.state != GattState.READY) return false
     var ok = gattManager.writeCharacteristic(GattUuids.DEVICE_NAME, name.toByteArray(Charsets.UTF_8))
     ok = ok && gattManager.writeCharacteristic(GattUuids.DEVICE_TYPE, byteArrayOf(type.ordinal.toByte()))
     ok = ok && gattManager.writeCharacteristic(GattUuids.CHEMISTRY,   byteArrayOf(chemistry.ordinal.toByte()))
-    ok = ok && gattManager.writeCharacteristic(GattUuids.CELL_COUNT,  byteArrayOf((cellCount.toIntOrNull() ?: 1).toByte()))
-    ok = ok && gattManager.writeCharacteristic(GattUuids.GROUP_ID,    byteArrayOf((groupId.toIntOrNull() ?: 0).toByte()))
+    ok = ok && gattManager.writeCharacteristic(GattUuids.CELL_COUNT,  byteArrayOf(cellCount.toByte()))
+    ok = ok && gattManager.writeCharacteristic(GattUuids.GROUP_ID,    byteArrayOf(groupId.toByte()))
     return ok
 }

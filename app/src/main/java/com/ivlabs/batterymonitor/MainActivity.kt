@@ -28,17 +28,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -54,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -78,7 +74,8 @@ data class BleDevice(
     val batteryChemistry: BatteryChemistry = BatteryChemistry.LIPO,
     val cellCount: Int = 1,
     val groupId: Int = 0,
-    val shutterCount: Int = 0
+    val shutterCount: Int = 0,
+    val isConnected: Boolean = true
 )
 
 // ---------------------------------------------------------------------------
@@ -143,6 +140,7 @@ class MainActivity : ComponentActivity() {
 
     private val devices = mutableStateMapOf<String, BleDevice>()
     private var isScanning by mutableStateOf(false)
+    private var isBluetoothEnabled by mutableStateOf(false)
 
     // Navigation back stack – starts on the Scan screen
     private val screenStack = mutableStateListOf<AppScreen>(AppScreen.Scan)
@@ -153,14 +151,18 @@ class MainActivity : ComponentActivity() {
     private val groupNameStore by lazy { GroupNameStore(this) }
     private val groupNames = mutableStateMapOf<Int, String>()
 
+    private val deviceHistoryStore by lazy { DeviceHistoryStore(this) }
+
     private val handler = Handler(Looper.getMainLooper())
     private val staleDeviceRunnable = object : Runnable {
         override fun run() {
             val now = System.currentTimeMillis()
             devices.keys.toList()
                 .filter { now - (devices[it]?.lastSeen ?: 0L) > STALE_TIMEOUT_MS }
-                .forEach { devices.remove(it) }
-            if (isScanning) handler.postDelayed(this, 1_000L)
+                .forEach { addr ->
+                    devices[addr]?.let { devices[addr] = it.copy(isConnected = false) }
+                }
+            handler.postDelayed(this, 1_000L)
         }
     }
 
@@ -188,10 +190,9 @@ class MainActivity : ComponentActivity() {
                 val screen = screenStack.last()
                 when (screen) {
                     is AppScreen.Scan -> BleMonitorScreen(
-                        scanItems  = buildScanList(devices.values.toList(), groupNames),
-                        isScanning = isScanning,
-                        onToggleScan = ::toggleScanning,
-                        onNavigateToGroup = { groupId, groupName ->
+                        scanItems          = buildScanList(devices.values.toList(), groupNames),
+                        isBluetoothEnabled = isBluetoothEnabled,
+                        onNavigateToGroup  = { groupId, groupName ->
                             screenStack.add(AppScreen.Group(groupId, groupName))
                         },
                         onNavigateToDevice = { device ->
@@ -228,7 +229,21 @@ class MainActivity : ComponentActivity() {
                     is AppScreen.Device -> DeviceScreen(
                         device = screen.device,
                         gattManager = gattManager,
+                        historyStore = deviceHistoryStore,
+                        onOpenSettings = {
+                            screenStack.add(
+                                AppScreen.DeviceSettings(screen.device, screen.bluetoothDevice)
+                            )
+                        },
                         onBack = { screenStack.removeLast() }
+                    )
+                    is AppScreen.DeviceSettings -> DeviceSettingsScreen(
+                        device = screen.device,
+                        gattManager = gattManager,
+                        onBack = { screenStack.removeLast() },
+                        onFactoryReset = {
+                            repeat(2) { if (screenStack.size > 1) screenStack.removeLast() }
+                        }
                     )
                     is AppScreen.Setup -> SetupScreen(
                         device = screen.device,
@@ -238,11 +253,24 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        if (hasPermissions()) startScanning()
+        else permissionLauncher.launch(buildPermissionList().toTypedArray())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isBluetoothEnabled = bluetoothAdapter?.isEnabled == true
+        if (!isScanning && hasPermissions() && isBluetoothEnabled) startScanning()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (isScanning) stopScanning()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isScanning) stopScanning()
+        handler.removeCallbacks(staleDeviceRunnable)
         gattManager.close()
     }
 
@@ -308,27 +336,26 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun toggleScanning() {
-        if (isScanning) stopScanning()
-        else if (hasPermissions()) startScanning()
-        else permissionLauncher.launch(buildPermissionList().toTypedArray())
-    }
-
     private fun startScanning() {
-        val scanner = bluetoothAdapter.bluetoothLeScanner ?: return
+        isBluetoothEnabled = true
+        val scanner = bluetoothAdapter.bluetoothLeScanner
+        if (scanner == null) {
+            isBluetoothEnabled = false
+            return
+        }
         scanner.startScan(
             null,
             ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
             scanCallback
         )
         isScanning = true
+        handler.removeCallbacks(staleDeviceRunnable)
         handler.post(staleDeviceRunnable)
     }
 
     private fun stopScanning() {
         bluetoothAdapter.bluetoothLeScanner?.stopScan(scanCallback)
         isScanning = false
-        handler.removeCallbacks(staleDeviceRunnable)
     }
 
     fun injectTestDevices() {
@@ -365,8 +392,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun BleMonitorScreen(
     scanItems: List<ScanListItem>,
-    isScanning: Boolean,
-    onToggleScan: () -> Unit,
+    isBluetoothEnabled: Boolean,
     onNavigateToGroup: (groupId: Int, groupName: String?) -> Unit,
     onNavigateToDevice: (BleDevice) -> Unit,
     onNavigateToSetup: (BleDevice) -> Unit,
@@ -377,20 +403,9 @@ fun BleMonitorScreen(
             TopAppBar(title = { Text("Camtraptions Battery Monitor") })
         },
         floatingActionButton = {
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                onInjectTestDevices?.let {
-                    SmallFloatingActionButton(onClick = it) {
-                        Text("T", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-                FloatingActionButton(onClick = onToggleScan) {
-                    Icon(
-                        imageVector = if (isScanning) Icons.Default.Close else Icons.Default.PlayArrow,
-                        contentDescription = if (isScanning) "Stop scanning" else "Start scanning"
-                    )
+            onInjectTestDevices?.let {
+                SmallFloatingActionButton(onClick = it) {
+                    Text("T", style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -409,48 +424,76 @@ fun BleMonitorScreen(
                 contentScale = ContentScale.Fit,
                 alpha = 0.08f
             )
-            if (scanItems.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (isScanning) "Scanning for devices…" else "Tap \u25B6 to start scanning",
-                        style = MaterialTheme.typography.bodyLarge
-                    )
+                    if (!isBluetoothEnabled) {
+                        Text(
+                            "\u26A0 Bluetooth is off",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else {
+                        Text(
+                            "\u25CF",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "Scanning",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(
-                        items = scanItems,
-                        key = { item ->
-                            when (item) {
-                                is ScanListItem.UnconfiguredDevice -> "unc_${item.device.address}"
-                                is ScanListItem.Group              -> "group_${item.groupId}"
-                                is ScanListItem.IndividualDevice   -> "ind_${item.device.address}"
+                if (scanItems.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No devices found yet\u2026",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(
+                            items = scanItems,
+                            key = { item ->
+                                when (item) {
+                                    is ScanListItem.UnconfiguredDevice -> "unc_${item.device.address}"
+                                    is ScanListItem.Group              -> "group_${item.groupId}"
+                                    is ScanListItem.IndividualDevice   -> "ind_${item.device.address}"
+                                }
                             }
-                        }
-                    ) { item ->
-                        when (item) {
-                            is ScanListItem.UnconfiguredDevice ->
-                                UnconfiguredDeviceCard(
-                                    device = item.device,
-                                    onClick = { onNavigateToSetup(item.device) }
-                                )
-                            is ScanListItem.Group ->
-                                GroupCard(
-                                    group = item,
-                                    onClick = { onNavigateToGroup(item.groupId, item.groupName) }
-                                )
-                            is ScanListItem.IndividualDevice ->
-                                IndividualDeviceCard(
-                                    device = item.device,
-                                    onClick = { onNavigateToDevice(item.device) }
-                                )
+                        ) { item ->
+                            when (item) {
+                                is ScanListItem.UnconfiguredDevice ->
+                                    UnconfiguredDeviceCard(
+                                        device = item.device,
+                                        onClick = { onNavigateToSetup(item.device) }
+                                    )
+                                is ScanListItem.Group ->
+                                    GroupCard(
+                                        group = item,
+                                        onClick = { onNavigateToGroup(item.groupId, item.groupName) }
+                                    )
+                                is ScanListItem.IndividualDevice ->
+                                    IndividualDeviceCard(
+                                        device = item.device,
+                                        onClick = { onNavigateToDevice(item.device) }
+                                    )
+                            }
                         }
                     }
                 }
@@ -532,10 +575,17 @@ fun GroupCard(group: ScanListItem.Group, onClick: () -> Unit) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = group.groupName ?: "Group ${group.groupId}",
+                        text = "Group ${group.groupId}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )
+                    if (!group.groupName.isNullOrBlank()) {
+                        Text(
+                            text = group.groupName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     camera?.let {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -597,6 +647,12 @@ fun DeviceRow(device: BleDevice) {
         if (device.batteryPercent < 20) {
             Text(text = "\u26A0", style = MaterialTheme.typography.bodySmall)
         }
+        Text(
+            text = if (device.isConnected) "Connected" else "Disconnected",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (device.isConnected) Color(0xFF2E7D32)
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -626,10 +682,18 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                         },
                         style = MaterialTheme.typography.titleMedium
                     )
-                    Text(
-                        text = device.name ?: device.address,
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Column {
+                        Text(
+                            text = device.name ?: device.address,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = if (device.isConnected) "Connected" else "Disconnected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (device.isConnected) Color(0xFF2E7D32)
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 Text(
                     text = "${device.batteryPercent}%",

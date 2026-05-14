@@ -24,6 +24,11 @@ sealed class AppScreen {
         val device: BleDevice,
         val bluetoothDevice: BluetoothDevice
     ) : AppScreen()
+
+    data class DeviceSettings(
+        val device: BleDevice,
+        val bluetoothDevice: BluetoothDevice
+    ) : AppScreen()
 }
 
 // ---------------------------------------------------------------------------

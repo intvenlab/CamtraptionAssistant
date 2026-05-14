@@ -189,6 +189,62 @@ fun NumberField(label: String, value: String, onValueChange: (String) -> Unit, m
 }
 
 // ---------------------------------------------------------------------------
+// Cell count dropdown (1–4)
+// ---------------------------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CellCountDropdown(selected: Int, onSelect: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            value = "$selected cell${if (selected > 1) "s" else ""}",
+            onValueChange = {}, readOnly = true,
+            label = { Text("Cell Count") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor()
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            (1..4).forEach { count ->
+                DropdownMenuItem(
+                    text = { Text("$count cell${if (count > 1) "s" else ""}") },
+                    onClick = { onSelect(count); expanded = false },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group ID dropdown (0 = No Group, 1–15)
+// ---------------------------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GroupDropdown(selected: Int, onSelect: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val label = if (selected == 0) "No Group" else "Group $selected"
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            value = label, onValueChange = {}, readOnly = true,
+            label = { Text("Group") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor()
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            (0..15).forEach { id ->
+                DropdownMenuItem(
+                    text = { Text(if (id == 0) "No Group (0)" else "Group $id") },
+                    onClick = { onSelect(id); expanded = false },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Color helper (internal to this module)
 // ---------------------------------------------------------------------------
 
