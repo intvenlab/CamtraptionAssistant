@@ -96,7 +96,12 @@ fun BatteryInfoCard(device: BleDevice) {
 // ---------------------------------------------------------------------------
 
 @Composable
-fun CameraCard(device: BleDevice, gattManager: BleGattManager, onReset: () -> Unit) {
+fun CameraCard(
+    device: BleDevice,
+    gattManager: BleGattManager,
+    onReset: () -> Unit,
+    onOpenCameraConfig: (() -> Unit)? = null
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Camera", style = MaterialTheme.typography.titleMedium)
@@ -123,6 +128,15 @@ fun CameraCard(device: BleDevice, gattManager: BleGattManager, onReset: () -> Un
                     )
                 ) {
                     Text("Reset")
+                }
+            }
+            if (onOpenCameraConfig != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onOpenCameraConfig,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Camera Logic")
                 }
             }
         }

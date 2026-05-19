@@ -75,6 +75,8 @@ data class BleDevice(
     val cellCount: Int = 1,
     val groupId: Int = 0,
     val shutterCount: Int = 0,
+    val extBatteryPercent: Int = -1,       // -1 = not present
+    val extVoltageMillivolts: Int = 0,
     val isConnected: Boolean = true
 )
 
@@ -226,17 +228,25 @@ class MainActivity : ComponentActivity() {
                         },
                         onBack = { screenStack.removeLast() }
                     )
-                    is AppScreen.Device -> DeviceScreen(
-                        device = screen.device,
-                        gattManager = gattManager,
-                        historyStore = deviceHistoryStore,
-                        onOpenSettings = {
-                            screenStack.add(
-                                AppScreen.DeviceSettings(screen.device, screen.bluetoothDevice)
-                            )
-                        },
-                        onBack = { screenStack.removeLast() }
-                    )
+                    is AppScreen.Device -> {
+                        // Always use the live advertised data — devices is mutableStateMapOf
+                        // so reading it here re-triggers composition on every scan update.
+                        val liveDevice = devices[screen.device.address] ?: screen.device
+                        DeviceScreen(
+                            device = liveDevice,
+                            gattManager = gattManager,
+                            historyStore = deviceHistoryStore,
+                            onOpenSettings = {
+                                screenStack.add(
+                                    AppScreen.DeviceSettings(liveDevice, screen.bluetoothDevice)
+                                )
+                            },
+                            onOpenCameraConfig = if (liveDevice.deviceType == DeviceType.CAMERA) {
+                                { screenStack.add(AppScreen.CameraConfig(liveDevice, screen.bluetoothDevice)) }
+                            } else null,
+                            onBack = { screenStack.removeLast() }
+                        )
+                    }
                     is AppScreen.DeviceSettings -> DeviceSettingsScreen(
                         device = screen.device,
                         gattManager = gattManager,
@@ -244,6 +254,11 @@ class MainActivity : ComponentActivity() {
                         onFactoryReset = {
                             repeat(2) { if (screenStack.size > 1) screenStack.removeLast() }
                         }
+                    )
+                    is AppScreen.CameraConfig -> CameraConfigScreen(
+                        device = screen.device,
+                        gattManager = gattManager,
+                        onBack = { screenStack.removeLast() }
                     )
                     is AppScreen.Setup -> SetupScreen(
                         device = screen.device,
@@ -287,8 +302,38 @@ class MainActivity : ComponentActivity() {
         val cellCount: Int
         val groupId: Int
         val shutterCount: Int
+        var extBatteryPercent = -1
+        var extVoltageMillivolts = 0
 
-        if (data.size >= 8) {
+        if (data.size >= 11) {
+            // New 13-byte packet (11 bytes after company ID strip):
+            // [0]=intPct [1-2]=intMv [3]=extPct [4-5]=extMv [6]=flags [7]=group [8]=cells [9-10]=shutter
+            val rawExtPct = data[3].toInt() and 0xFF
+            extBatteryPercent = if (rawExtPct == 0xFF) -1 else rawExtPct
+            val extMvLo = data[4].toInt() and 0xFF
+            val extMvHi = data[5].toInt() and 0xFF
+            val rawExtMv = (extMvHi shl 8) or extMvLo
+            extVoltageMillivolts = if (extBatteryPercent < 0) 0 else rawExtMv
+            val flags = data[6].toInt() and 0xFF
+            isConfigured = (flags and 0x01) != 0
+            deviceType = when ((flags shr 1) and 0x03) {
+                1    -> DeviceType.CAMERA
+                2    -> DeviceType.STROBE
+                3    -> DeviceType.FOCUS_LIGHT
+                else -> DeviceType.BATTERY_MONITOR
+            }
+            batteryChemistry = when ((flags shr 3) and 0x03) {
+                1    -> BatteryChemistry.LIFEPO4
+                2    -> BatteryChemistry.NIMH
+                3    -> BatteryChemistry.ALKALINE
+                else -> BatteryChemistry.LIPO
+            }
+            groupId      = data[7].toInt() and 0xFF
+            cellCount    = data[8].toInt() and 0xFF
+            shutterCount = ((data[10].toInt() and 0xFF) shl 8) or (data[9].toInt() and 0xFF)
+        } else if (data.size >= 8) {
+            // Old 10-byte packet (8 bytes after company ID strip) – backward compat:
+            // [0]=pct [1-2]=mv [3]=flags [4]=group [5]=cells [6-7]=shutter
             val flags = data[3].toInt() and 0xFF
             isConfigured = (flags and 0x01) != 0
             deviceType = when ((flags shr 1) and 0x03) {
@@ -316,18 +361,20 @@ class MainActivity : ComponentActivity() {
         }
 
         val device = BleDevice(
-            address           = result.device.address,
-            name              = result.scanRecord?.deviceName,
-            batteryPercent    = batteryPercent,
-            voltageMillivolts = voltageMillivolts,
-            rssi              = result.rssi,
-            lastSeen          = System.currentTimeMillis(),
-            isConfigured      = isConfigured,
-            deviceType        = deviceType,
-            batteryChemistry  = batteryChemistry,
-            cellCount         = cellCount,
-            groupId           = groupId,
-            shutterCount      = shutterCount
+            address              = result.device.address,
+            name                 = result.scanRecord?.deviceName,
+            batteryPercent       = batteryPercent,
+            voltageMillivolts    = voltageMillivolts,
+            rssi                 = result.rssi,
+            lastSeen             = System.currentTimeMillis(),
+            isConfigured         = isConfigured,
+            deviceType           = deviceType,
+            batteryChemistry     = batteryChemistry,
+            cellCount            = cellCount,
+            groupId              = groupId,
+            shutterCount         = shutterCount,
+            extBatteryPercent    = extBatteryPercent,
+            extVoltageMillivolts = extVoltageMillivolts
         )
         runOnUiThread { devices[device.address] = device }
     }
@@ -615,6 +662,7 @@ fun GroupCard(group: ScanListItem.Group, onClick: () -> Unit) {
 
 @Composable
 fun DeviceRow(device: BleDevice) {
+    val pct = if (device.extBatteryPercent >= 0) device.extBatteryPercent else device.batteryPercent
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -635,16 +683,16 @@ fun DeviceRow(device: BleDevice) {
             modifier = Modifier.weight(1f)
         )
         LinearProgressIndicator(
-            progress = { device.batteryPercent / 100f },
+            progress = { pct / 100f },
             modifier = Modifier.weight(2f),
-            color = batteryDisplayColor(device.batteryPercent)
+            color = batteryDisplayColor(pct)
         )
         Text(
-            text = "${device.batteryPercent}%",
+            text = "$pct%",
             style = MaterialTheme.typography.bodySmall,
-            color = batteryDisplayColor(device.batteryPercent)
+            color = batteryDisplayColor(pct)
         )
-        if (device.batteryPercent < 20) {
+        if (pct < 20) {
             Text(text = "\u26A0", style = MaterialTheme.typography.bodySmall)
         }
         Text(
@@ -658,6 +706,8 @@ fun DeviceRow(device: BleDevice) {
 
 @Composable
 fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
+    val pct    = if (device.extBatteryPercent >= 0) device.extBatteryPercent   else device.batteryPercent
+    val voltMv = if (device.extBatteryPercent >= 0) device.extVoltageMillivolts else device.voltageMillivolts
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -696,16 +746,16 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                     }
                 }
                 Text(
-                    text = "${device.batteryPercent}%",
+                    text = "$pct%",
                     style = MaterialTheme.typography.titleLarge,
-                    color = batteryDisplayColor(device.batteryPercent)
+                    color = batteryDisplayColor(pct)
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
             LinearProgressIndicator(
-                progress = { device.batteryPercent / 100f },
+                progress = { pct / 100f },
                 modifier = Modifier.fillMaxWidth(),
-                color = batteryDisplayColor(device.batteryPercent)
+                color = batteryDisplayColor(pct)
             )
             Spacer(modifier = Modifier.height(8.dp))
             Row(
@@ -713,7 +763,7 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "${"%.3f".format(device.voltageMillivolts / 1000f)}V",
+                    text = "${"%.3f".format(voltMv / 1000f)}V",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(

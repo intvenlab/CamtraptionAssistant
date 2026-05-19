@@ -29,6 +29,11 @@ sealed class AppScreen {
         val device: BleDevice,
         val bluetoothDevice: BluetoothDevice
     ) : AppScreen()
+
+    data class CameraConfig(
+        val device: BleDevice,
+        val bluetoothDevice: BluetoothDevice
+    ) : AppScreen()
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +52,7 @@ object GattUuids {
     val SHUTTER_COUNT = UUID.fromString("ca500007-0000-0000-0000-000000000000")!!
     val RESET_SHUTTER = UUID.fromString("ca500008-0000-0000-0000-000000000000")!!
     val FACTORY_RESET = UUID.fromString("ca500009-0000-0000-0000-000000000000")!!
+    val CAMERA_CONFIG = UUID.fromString("ca50000a-0000-0000-0000-000000000000")!!
 }
 
 // ---------------------------------------------------------------------------

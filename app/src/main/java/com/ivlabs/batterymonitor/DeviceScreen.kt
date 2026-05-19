@@ -65,10 +65,12 @@ fun DeviceScreen(
     gattManager: BleGattManager,
     historyStore: DeviceHistoryStore,
     onOpenSettings: () -> Unit,
+    onOpenCameraConfig: (() -> Unit)? = null,
     onBack: () -> Unit
 ) {
     BackHandler { gattManager.disconnect(); onBack() }
 
+    val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf<List<DeviceHistoryEntry>>(emptyList()) }
 
     // Load persisted history on first composition
@@ -93,7 +95,11 @@ fun DeviceScreen(
         }
     }
 
-    val batteryColor = batteryDisplayColor(device.batteryPercent)
+    // External battery is the primary reading when present; internal is the fallback.
+    val displayPercent   = if (device.extBatteryPercent >= 0) device.extBatteryPercent   else device.batteryPercent
+    val displayVoltageMv = if (device.extBatteryPercent >= 0) device.extVoltageMillivolts else device.voltageMillivolts
+    val displayIsExt     = device.extBatteryPercent >= 0
+    val batteryColor     = batteryDisplayColor(displayPercent)
 
     Scaffold(
         topBar = {
@@ -121,30 +127,39 @@ fun DeviceScreen(
         ) {
             // ── Battery gauge ──────────────────────────────────────────────
             item {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 40.dp, vertical = 8.dp)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    BatteryGauge(
-                        percent = device.batteryPercent,
+                    Text(
+                        text = if (displayIsExt) "Device Battery" else "Internal Battery",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .aspectRatio(1f)
-                    )
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "${device.batteryPercent}%",
-                            style = MaterialTheme.typography.displaySmall,
-                            fontWeight = FontWeight.Bold,
-                            color = batteryColor
+                            .padding(horizontal = 40.dp, vertical = 8.dp)
+                    ) {
+                        BatteryGauge(
+                            percent = displayPercent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(1f)
                         )
-                        Text(
-                            text = "${"%.3f".format(device.voltageMillivolts / 1000f)} V",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "${displayPercent}%",
+                                style = MaterialTheme.typography.displaySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = batteryColor
+                            )
+                            Text(
+                                text = "${"%.3f".format(displayVoltageMv / 1000f)} V",
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 }
             }
@@ -184,16 +199,37 @@ fun DeviceScreen(
                                 }
                             )
                         }
-                        if (device.deviceType == DeviceType.CAMERA) {
-                            HorizontalDivider()
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                StatItem("Shutters", "%,d".format(device.shutterCount))
-                            }
+                        // Internal battery always visible on device page
+                        HorizontalDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            StatItem("Internal Battery", "${device.batteryPercent}%")
+                            StatItem(
+                                "Internal Voltage",
+                                "${"%.3f".format(device.voltageMillivolts / 1000f)} V"
+                            )
                         }
                     }
+                }
+            }
+
+            // ── Camera (shutter count + reset + logic) ─────────────────────
+            if (device.deviceType == DeviceType.CAMERA) {
+                item {
+                    CameraCard(
+                        device = device,
+                        gattManager = gattManager,
+                        onOpenCameraConfig = onOpenCameraConfig,
+                        onReset = {
+                            scope.launch {
+                                gattManager.writeCharacteristic(
+                                    GattUuids.RESET_SHUTTER, byteArrayOf(0x01)
+                                )
+                            }
+                        }
+                    )
                 }
             }
 
@@ -435,16 +471,6 @@ fun DeviceSettingsScreen(
                 }
             }
 
-            if (device.deviceType == DeviceType.CAMERA) {
-                item {
-                    CameraCard(device, gattManager) {
-                        scope.launch {
-                            gattManager.writeCharacteristic(GattUuids.RESET_SHUTTER, byteArrayOf(0x01))
-                        }
-                    }
-                }
-            }
-
             item {
                 saveStatus?.let {
                     Text(
@@ -464,7 +490,6 @@ fun DeviceSettingsScreen(
                             saveStatus = if (ok) "Saved successfully" else "Save failed – not connected"
                         }
                     },
-                    enabled = gattManager.state == GattState.READY,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Save")
