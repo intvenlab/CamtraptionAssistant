@@ -2,6 +2,7 @@ package com.ivlabs.batterymonitor
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -68,37 +70,34 @@ fun DeviceScreen(
     onOpenCameraConfig: (() -> Unit)? = null,
     onBack: () -> Unit
 ) {
-    BackHandler { gattManager.disconnect(); onBack() }
+    BackHandler { onBack() }
 
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf<List<DeviceHistoryEntry>>(emptyList()) }
 
-    // Load persisted history on first composition
-    LaunchedEffect(Unit) {
-        history = withContext(Dispatchers.IO) { historyStore.load(device.address) }
-    }
-
-    // Append a new entry whenever GATT connects (state → READY)
-    LaunchedEffect(gattManager.state) {
-        if (gattManager.state == GattState.READY) {
-            val entry = DeviceHistoryEntry(
-                timestamp         = System.currentTimeMillis(),
-                batteryPercent    = device.batteryPercent,
-                voltageMillivolts = device.voltageMillivolts,
-                rssi              = device.rssi
-            )
-            val updated = withContext(Dispatchers.IO) {
-                historyStore.append(device.address, entry)
-                historyStore.load(device.address)
-            }
-            history = updated
+    // On page entry: log a history snapshot from the current advertisement data
+    // and load the full history list. GATT is not connected on this screen.
+    LaunchedEffect(device.address) {
+        val entry = DeviceHistoryEntry(
+            timestamp         = System.currentTimeMillis(),
+            batteryPercent    = device.extBatteryPercent,
+            voltageMillivolts = device.extVoltageMillivolts,
+            rssi              = device.rssi,
+            shutterCount      = device.shutterCount
+        )
+        history = withContext(Dispatchers.IO) {
+            historyStore.append(device.address, entry)
+            historyStore.load(device.address)
         }
     }
 
-    // External battery is the primary reading when present; internal is the fallback.
-    val displayPercent   = if (device.extBatteryPercent >= 0) device.extBatteryPercent   else device.batteryPercent
-    val displayVoltageMv = if (device.extBatteryPercent >= 0) device.extVoltageMillivolts else device.voltageMillivolts
-    val displayIsExt     = device.extBatteryPercent >= 0
+    // Gauge defaults to external battery when present; swipe left/right to toggle.
+    val hasExt = device.extBatteryPercent >= 0
+    var showExternal by remember(hasExt) { mutableStateOf(hasExt) }
+
+    val displayPercent   = if (showExternal) device.extBatteryPercent    else device.batteryPercent
+    val displayVoltageMv = if (showExternal) device.extVoltageMillivolts else device.voltageMillivolts
+    val displayLabel     = if (showExternal) "Device Battery"            else "Internal Battery"
     val batteryColor     = batteryDisplayColor(displayPercent)
 
     Scaffold(
@@ -127,19 +126,59 @@ fun DeviceScreen(
         ) {
             // ── Battery gauge ──────────────────────────────────────────────
             item {
+                var dragAccumulated by remember { mutableStateOf(0f) }
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = if (displayIsExt) "Device Battery" else "Internal Battery",
+                        text = displayLabel,
                         style = MaterialTheme.typography.titleMedium
                     )
+                    // Page-indicator dots shown when both batteries are available
+                    if (hasExt) {
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (showExternal) "\u25CF" else "\u25CB",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (showExternal) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (!showExternal) "\u25CF" else "\u25CB",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (!showExternal) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 40.dp, vertical = 8.dp)
+                            .pointerInput(hasExt) {
+                                if (!hasExt) return@pointerInput
+                                detectHorizontalDragGestures(
+                                    onDragStart  = { dragAccumulated = 0f },
+                                    onDragCancel = { dragAccumulated = 0f },
+                                    onDragEnd    = {
+                                        if (dragAccumulated > 40.dp.toPx() ||
+                                            dragAccumulated < -40.dp.toPx()) {
+                                            showExternal = !showExternal
+                                        }
+                                        dragAccumulated = 0f
+                                    },
+                                    onHorizontalDrag = { change, amount ->
+                                        change.consume()
+                                        dragAccumulated += amount
+                                    }
+                                )
+                            }
                     ) {
                         BatteryGauge(
                             percent = displayPercent,
@@ -189,15 +228,6 @@ fun DeviceScreen(
                                 value = if (device.groupId == 0) "None" else "Group ${device.groupId}"
                             )
                             StatItem("Signal", "${device.rssi} dBm")
-                            StatItem(
-                                label = "Status",
-                                value = when (gattManager.state) {
-                                    GattState.READY      -> "Connected"
-                                    GattState.CONNECTING -> "Connecting"
-                                    GattState.ERROR      -> "Error"
-                                    GattState.IDLE       -> "Idle"
-                                }
-                            )
                         }
                         // Internal battery always visible on device page
                         HorizontalDivider()
@@ -210,6 +240,13 @@ fun DeviceScreen(
                                 "Internal Voltage",
                                 "${"%.3f".format(device.voltageMillivolts / 1000f)} V"
                             )
+                        }
+                        HorizontalDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            StatItem("MAC Address", device.address)
                         }
                     }
                 }
@@ -253,7 +290,7 @@ fun DeviceScreen(
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                             history.forEachIndexed { idx, entry ->
-                                HistoryEntryRow(entry)
+                                HistoryEntryRow(entry, device.deviceType)
                                 if (idx < history.lastIndex) {
                                     HorizontalDivider()
                                 }
@@ -322,7 +359,7 @@ private fun StatItem(label: String, value: String) {
 }
 
 @Composable
-private fun HistoryEntryRow(entry: DeviceHistoryEntry) {
+private fun HistoryEntryRow(entry: DeviceHistoryEntry, deviceType: DeviceType) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -333,18 +370,26 @@ private fun HistoryEntryRow(entry: DeviceHistoryEntry) {
         Text(
             text = formatTimestamp(entry.timestamp),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f)
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        if (deviceType == DeviceType.CAMERA) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "S: ${entry.shutterCount}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.weight(1f))
         Text(
-            text = "${entry.batteryPercent}%",
+            text = if (entry.batteryPercent >= 0) "${entry.batteryPercent}%" else "--",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
-            color = batteryDisplayColor(entry.batteryPercent)
+            color = batteryDisplayColor(entry.batteryPercent.coerceAtLeast(0))
         )
         Spacer(Modifier.width(12.dp))
         Text(
-            text = "${"%.3f".format(entry.voltageMillivolts / 1000f)}V",
+            text = if (entry.voltageMillivolts > 0) "${"%.3f".format(entry.voltageMillivolts / 1000f)}V" else "--",
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(Modifier.width(12.dp))

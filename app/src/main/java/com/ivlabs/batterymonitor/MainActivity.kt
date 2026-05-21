@@ -200,7 +200,6 @@ class MainActivity : ComponentActivity() {
                         onNavigateToDevice = { device ->
                             val btDevice = bluetoothAdapter.getRemoteDevice(device.address)
                             screenStack.add(AppScreen.Device(device, btDevice))
-                            gattManager.connect(btDevice)
                         },
                         onNavigateToSetup = { device ->
                             val btDevice = bluetoothAdapter.getRemoteDevice(device.address)
@@ -224,7 +223,6 @@ class MainActivity : ComponentActivity() {
                         onNavigateToDevice = { device ->
                             val btDevice = bluetoothAdapter.getRemoteDevice(device.address)
                             screenStack.add(AppScreen.Device(device, btDevice))
-                            gattManager.connect(btDevice)
                         },
                         onBack = { screenStack.removeLast() }
                     )
@@ -237,12 +235,16 @@ class MainActivity : ComponentActivity() {
                             gattManager = gattManager,
                             historyStore = deviceHistoryStore,
                             onOpenSettings = {
+                                gattManager.connect(screen.bluetoothDevice)
                                 screenStack.add(
                                     AppScreen.DeviceSettings(liveDevice, screen.bluetoothDevice)
                                 )
                             },
                             onOpenCameraConfig = if (liveDevice.deviceType == DeviceType.CAMERA) {
-                                { screenStack.add(AppScreen.CameraConfig(liveDevice, screen.bluetoothDevice)) }
+                                {
+                                    gattManager.connect(screen.bluetoothDevice)
+                                    screenStack.add(AppScreen.CameraConfig(liveDevice, screen.bluetoothDevice))
+                                }
                             } else null,
                             onBack = { screenStack.removeLast() }
                         )
@@ -250,7 +252,7 @@ class MainActivity : ComponentActivity() {
                     is AppScreen.DeviceSettings -> DeviceSettingsScreen(
                         device = screen.device,
                         gattManager = gattManager,
-                        onBack = { screenStack.removeLast() },
+                        onBack = { gattManager.disconnect(); screenStack.removeLast() },
                         onFactoryReset = {
                             repeat(2) { if (screenStack.size > 1) screenStack.removeLast() }
                         }
@@ -258,7 +260,7 @@ class MainActivity : ComponentActivity() {
                     is AppScreen.CameraConfig -> CameraConfigScreen(
                         device = screen.device,
                         gattManager = gattManager,
-                        onBack = { screenStack.removeLast() }
+                        onBack = { gattManager.disconnect(); screenStack.removeLast() }
                     )
                     is AppScreen.Setup -> SetupScreen(
                         device = screen.device,
@@ -585,11 +587,6 @@ fun UnconfiguredDeviceCard(device: BleDevice, onClick: () -> Unit) {
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "MAC: ${device.address}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer
-                )
-                Text(
                     text = "Signal: ${device.rssi} dBm",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer
@@ -662,7 +659,7 @@ fun GroupCard(group: ScanListItem.Group, onClick: () -> Unit) {
 
 @Composable
 fun DeviceRow(device: BleDevice) {
-    val pct = if (device.extBatteryPercent >= 0) device.extBatteryPercent else device.batteryPercent
+    val pct = device.extBatteryPercent
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -683,16 +680,16 @@ fun DeviceRow(device: BleDevice) {
             modifier = Modifier.weight(1f)
         )
         LinearProgressIndicator(
-            progress = { pct / 100f },
+            progress = { pct.coerceAtLeast(0) / 100f },
             modifier = Modifier.weight(2f),
-            color = batteryDisplayColor(pct)
+            color = batteryDisplayColor(pct.coerceAtLeast(0))
         )
         Text(
-            text = "$pct%",
+            text = if (pct >= 0) "$pct%" else "--",
             style = MaterialTheme.typography.bodySmall,
-            color = batteryDisplayColor(pct)
+            color = batteryDisplayColor(pct.coerceAtLeast(0))
         )
-        if (pct < 20) {
+        if (pct in 0..19) {
             Text(text = "\u26A0", style = MaterialTheme.typography.bodySmall)
         }
         Text(
@@ -706,8 +703,8 @@ fun DeviceRow(device: BleDevice) {
 
 @Composable
 fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
-    val pct    = if (device.extBatteryPercent >= 0) device.extBatteryPercent   else device.batteryPercent
-    val voltMv = if (device.extBatteryPercent >= 0) device.extVoltageMillivolts else device.voltageMillivolts
+    val pct    = device.extBatteryPercent
+    val voltMv = device.extVoltageMillivolts
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -746,16 +743,16 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                     }
                 }
                 Text(
-                    text = "$pct%",
+                    text = if (pct >= 0) "$pct%" else "--",
                     style = MaterialTheme.typography.titleLarge,
-                    color = batteryDisplayColor(pct)
+                    color = batteryDisplayColor(pct.coerceAtLeast(0))
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
             LinearProgressIndicator(
-                progress = { pct / 100f },
+                progress = { pct.coerceAtLeast(0) / 100f },
                 modifier = Modifier.fillMaxWidth(),
-                color = batteryDisplayColor(pct)
+                color = batteryDisplayColor(pct.coerceAtLeast(0))
             )
             Spacer(modifier = Modifier.height(8.dp))
             Row(
@@ -763,20 +760,12 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "${"%.3f".format(voltMv / 1000f)}V",
+                    text = if (voltMv > 0) "${"%.3f".format(voltMv / 1000f)}V" else "--",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
                     text = "${device.rssi} dBm",
                     style = MaterialTheme.typography.bodyMedium
-                )
-            }
-            if (device.name != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = device.address,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

@@ -147,7 +147,7 @@ fun SetupScreen(
                             }
                         }
                     },
-                    enabled = gattManager.state == GattState.READY && nameInput.isNotBlank(),
+                    enabled = nameInput.isNotBlank(),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Save & Finish")

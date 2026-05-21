@@ -9,7 +9,8 @@ data class DeviceHistoryEntry(
     val timestamp: Long,
     val batteryPercent: Int,
     val voltageMillivolts: Int,
-    val rssi: Int
+    val rssi: Int,
+    val shutterCount: Int = 0
 )
 
 class DeviceHistoryStore(private val context: Context) {
@@ -34,7 +35,8 @@ class DeviceHistoryStore(private val context: Context) {
                     timestamp         = obj.getLong("ts"),
                     batteryPercent    = obj.getInt("pct"),
                     voltageMillivolts = obj.getInt("mv"),
-                    rssi              = obj.getInt("rssi")
+                    rssi              = obj.getInt("rssi"),
+                    shutterCount      = obj.optInt("shutter", 0)
                 )
             }
         } catch (e: Exception) {
@@ -49,10 +51,11 @@ class DeviceHistoryStore(private val context: Context) {
         val array = JSONArray()
         trimmed.forEach { e ->
             array.put(JSONObject().apply {
-                put("ts",   e.timestamp)
-                put("pct",  e.batteryPercent)
-                put("mv",   e.voltageMillivolts)
-                put("rssi", e.rssi)
+                put("ts",      e.timestamp)
+                put("pct",     e.batteryPercent)
+                put("mv",      e.voltageMillivolts)
+                put("rssi",    e.rssi)
+                put("shutter", e.shutterCount)
             })
         }
         try { fileFor(address).writeText(array.toString()) } catch (e: Exception) {}

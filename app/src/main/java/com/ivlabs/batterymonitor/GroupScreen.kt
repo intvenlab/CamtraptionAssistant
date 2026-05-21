@@ -152,7 +152,7 @@ fun GroupScreen(
                                 onGroupNameChange(groupId, input)
                             }
                         },
-                        label = { Text("Group Name") },
+                        label = { Text("Group Description - (Optional)") },
                         placeholder = { Text("Group $groupId") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()

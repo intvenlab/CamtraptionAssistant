@@ -327,7 +327,6 @@ fun CameraConfigScreen(
                                          else "Save failed \u2013 not connected"
                         }
                     },
-                    enabled = gattManager.state == GattState.READY,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Save")

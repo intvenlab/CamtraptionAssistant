@@ -25,8 +25,10 @@ using namespace Adafruit_LittleFS_Namespace;
 #define HP_OUT_PIN           5   // D5 – HP output to camera (open-drain)
 
 // ─── ADC ─────────────────────────────────────────────────────────────────────
-#define VOLTAGE_DIVIDER_RATIO 1.0f
-#define ADC_MAX_VALUE         1024.0f
+#define ADC_MAX_VALUE          1024.0f
+#define ADC_REFERENCE_VOLTAGE  3.0f    // Matches AR_INTERNAL_3_0
+// External battery (A1) uses a 50kΩ / 10kΩ divider: ratio = (50k+10k)/10k = 6.0
+#define EXT_BATT_DIVIDER_RATIO 6.0f
 
 // ─── Timing ──────────────────────────────────────────────────────────────────
 #define ADVERTISING_DURATION_MS 50
@@ -142,7 +144,7 @@ void setupCameraGatt();
 
 void advertiseData(int intPct, float intVoltage, uint8_t extPct, uint16_t extVoltMv);
 float readBatteryVoltage();
-bool  readDeviceBattery(int &pct, float &voltMv);
+bool  readDeviceBattery(int &pct, float &voltMv, uint8_t cellCount);
 int   readCR2032Percentage(float voltage);  // internal CR2032 coin cell (A0)
 int   readLiPoPercentage(float voltage);    // device/camera LiPo battery  (A1)
 
@@ -269,7 +271,7 @@ void loop() {
 
   int   extPctInt = -1;
   float extVoltMvF = 0.0f;
-  bool  extPresent = readDeviceBattery(extPctInt, extVoltMvF);
+  bool  extPresent = readDeviceBattery(extPctInt, extVoltMvF, cfg.cellCount);
   uint8_t  extBatPct = extPresent ? (uint8_t)extPctInt    : 0xFF;
   uint16_t extBatMv  = extPresent ? (uint16_t)extVoltMvF  : 0xFFFF;
 
@@ -813,7 +815,7 @@ float readBatteryVoltage() {
     total += analogRead(BATTERY_PIN);
     delayMicroseconds(100);
   }
-  return ((float)(total / 5) / ADC_MAX_VALUE) * 3.6f * VOLTAGE_DIVIDER_RATIO;
+  return ((float)(total / 5) / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -821,7 +823,7 @@ float readBatteryVoltage() {
 // Returns true if a battery is detected (voltage >= 0.5V).
 // On return: pct = 0–100, voltMv = millivolts.
 // ═════════════════════════════════════════════════════════════════════════════
-bool readDeviceBattery(int &pct, float &voltMv) {
+bool readDeviceBattery(int &pct, float &voltMv, uint8_t cellCount) {
   analogReference(AR_INTERNAL_3_0);
   analogReadResolution(10);
   int total = 0;
@@ -829,10 +831,11 @@ bool readDeviceBattery(int &pct, float &voltMv) {
     total += analogRead(DEVICE_BATTERY_PIN);
     delayMicroseconds(100);
   }
-  float voltage = ((float)(total / 5) / ADC_MAX_VALUE) * 3.6f * VOLTAGE_DIVIDER_RATIO;
+  float voltage = ((float)(total / 5) / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE * EXT_BATT_DIVIDER_RATIO;
   if (voltage < 0.5f) return false;  // not present
-  voltMv = voltage * 1000.0f;
-  pct    = readLiPoPercentage(voltage);
+  voltMv = voltage * 1000.0f;        // full pack voltage sent to app
+  uint8_t cells = (cellCount < 1) ? 1 : cellCount;
+  pct = readLiPoPercentage(voltage / cells);  // per-cell voltage for % lookup
   return true;
 }
 
@@ -859,7 +862,7 @@ int readCR2032Percentage(float voltage) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// LiPo percentage (external camera battery, A2)
+// LiPo percentage (external camera battery, A1)
 // Operating range 3.0–4.2 V; piecewise linear approximation.
 // ═════════════════════════════════════════════════════════════════════════════
 int readLiPoPercentage(float voltage) {
