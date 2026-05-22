@@ -217,18 +217,24 @@ fun DeviceScreen(
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
                             StatItem("Type", device.deviceType.displayName())
-                            StatItem("Chemistry", device.batteryChemistry.displayName())
-                            StatItem("Cells", "${device.cellCount}")
+                            StatItem("Group", if (device.groupId == 0) "None" else "${device.groupId}")
+                            StatItem(
+                                label = "Connection",
+                                value = when (gattManager.state) {
+                                    GattState.IDLE       -> "Not Connected"
+                                    GattState.CONNECTING -> "Connecting…"
+                                    GattState.READY      -> "Connected"
+                                    GattState.ERROR      -> "Error"
+                                }
+                            )
                         }
                         HorizontalDivider()
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            StatItem(
-                                label = "Group",
-                                value = if (device.groupId == 0) "None" else "Group ${device.groupId}"
-                            )
+                            StatItem("Chemistry", device.batteryChemistry.displayName())
+                            StatItem("Cells", "${device.cellCount}")
                             StatItem("Signal", "${device.rssi} dBm")
                         }
                         // Internal battery always visible on device page
