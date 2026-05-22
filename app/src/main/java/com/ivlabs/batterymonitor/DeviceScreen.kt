@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.text.KeyboardOptions
@@ -220,12 +221,9 @@ fun DeviceScreen(
                             StatItem("Group", if (device.groupId == 0) "None" else "${device.groupId}")
                             StatItem(
                                 label = "Connection",
-                                value = when (gattManager.state) {
-                                    GattState.IDLE       -> "Not Connected"
-                                    GattState.CONNECTING -> "Connecting…"
-                                    GattState.READY      -> "Connected"
-                                    GattState.ERROR      -> "Error"
-                                }
+                                value = if (device.isConnected) "Advertising" else "Out of Range",
+                                valueColor = if (device.isConnected) Color(0xFF4CAF50)
+                                             else Color.Unspecified
                             )
                         }
                         HorizontalDivider()
@@ -360,12 +358,13 @@ private fun BatteryGauge(percent: Int, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StatItem(label: String, value: String) {
+private fun StatItem(label: String, value: String, valueColor: Color = Color.Unspecified) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
+            color = valueColor
         )
         Text(
             text = label,
