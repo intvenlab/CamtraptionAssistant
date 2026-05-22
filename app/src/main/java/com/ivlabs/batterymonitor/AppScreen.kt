@@ -53,6 +53,9 @@ object GattUuids {
     val RESET_SHUTTER = UUID.fromString("ca500008-0000-0000-0000-000000000000")!!
     val FACTORY_RESET = UUID.fromString("ca500009-0000-0000-0000-000000000000")!!
     val CAMERA_CONFIG = UUID.fromString("ca50000a-0000-0000-0000-000000000000")!!
+    val TELEMETRY     = UUID.fromString("ca50000b-0000-0000-0000-000000000000")!!
+    val CAL_SET       = UUID.fromString("ca50000c-0000-0000-0000-000000000000")!!
+    val INT_CAL_SET   = UUID.fromString("ca50000d-0000-0000-0000-000000000000")!!
 }
 
 // ---------------------------------------------------------------------------
@@ -79,4 +82,13 @@ fun BatteryChemistry.displayName() = when (this) {
     BatteryChemistry.LIFEPO4  -> "LiFePO4"
     BatteryChemistry.NIMH     -> "NiMH"
     BatteryChemistry.ALKALINE -> "Alkaline"
+}
+
+fun Int.cameraStateLabel() = when (this) {
+    0    -> "Idle"
+    1    -> "Wake AF"
+    2    -> "Cold FP Wait"
+    3    -> "Burst Active"
+    4    -> "Post-Shutter"
+    else -> "Unknown"
 }

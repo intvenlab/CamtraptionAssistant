@@ -46,7 +46,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -248,6 +250,15 @@ fun DeviceScreen(
                         ) {
                             StatItem("MAC Address", device.address)
                         }
+                        if (device.firmwareBuild.isNotEmpty()) {
+                            HorizontalDivider()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                StatItem("Built", device.firmwareBuild)
+                            }
+                        }
                     }
                 }
             }
@@ -434,7 +445,11 @@ fun DeviceSettingsScreen(
     var chemInput  by remember { mutableStateOf(device.batteryChemistry) }
     var cellInput  by remember { mutableStateOf(device.cellCount.coerceIn(1, 4)) }
     var groupInput by remember { mutableStateOf(device.groupId) }
-    var saveStatus by remember { mutableStateOf<String?>(null) }
+    var saveStatus      by remember { mutableStateOf<String?>(null) }
+    var calVoltageInput by remember { mutableStateOf("") }
+    var calStatus       by remember { mutableStateOf<String?>(null) }
+    var intCalVoltageInput by remember { mutableStateOf("") }
+    var intCalStatus       by remember { mutableStateOf<String?>(null) }
 
     // Read settings from device when GATT is ready
     LaunchedEffect(gattManager.state) {
@@ -538,6 +553,140 @@ fun DeviceSettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Save")
+                }
+            }
+
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("External Battery Calibration", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Connect battery and enter the actual pack voltage " +
+                            "measured with a multimeter, then tap Set Cal.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = calVoltageInput,
+                            onValueChange = { calVoltageInput = it },
+                            label = { Text("Actual Voltage (V)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        val mv = (calVoltageInput.toFloatOrNull() ?: 0f) * 1000f
+                                        val mvi = mv.toInt().coerceIn(100, 30000)
+                                        val ok = gattManager.writeCharacteristic(
+                                            GattUuids.CAL_SET,
+                                            byteArrayOf((mvi and 0xFF).toByte(), ((mvi shr 8) and 0xFF).toByte())
+                                        )
+                                        calStatus = if (ok) "Calibration set" else "Write failed"
+                                    }
+                                },
+                                enabled = gattManager.state == GattState.READY &&
+                                          (calVoltageInput.toFloatOrNull() ?: 0f) > 0f,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Set Cal") }
+
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        val ok = gattManager.writeCharacteristic(
+                                            GattUuids.CAL_SET, byteArrayOf(0x00, 0x00)
+                                        )
+                                        calStatus = if (ok) "Reset to default" else "Write failed"
+                                    }
+                                },
+                                enabled = gattManager.state == GattState.READY,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Reset Cal") }
+                        }
+                        calStatus?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (it.contains("failed")) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("Internal CR2032 Calibration", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Enter the actual CR2032 coin cell voltage measured with a multimeter, " +
+                            "then tap Set Cal.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = intCalVoltageInput,
+                            onValueChange = { intCalVoltageInput = it },
+                            label = { Text("Actual Voltage (V)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        val mv = (intCalVoltageInput.toFloatOrNull() ?: 0f) * 1000f
+                                        val mvi = mv.toInt().coerceIn(100, 5000)
+                                        val ok = gattManager.writeCharacteristic(
+                                            GattUuids.INT_CAL_SET,
+                                            byteArrayOf((mvi and 0xFF).toByte(), ((mvi shr 8) and 0xFF).toByte())
+                                        )
+                                        intCalStatus = if (ok) "Calibration set" else "Write failed"
+                                    }
+                                },
+                                enabled = gattManager.state == GattState.READY &&
+                                          (intCalVoltageInput.toFloatOrNull() ?: 0f) > 0f,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Set Cal") }
+
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        val ok = gattManager.writeCharacteristic(
+                                            GattUuids.INT_CAL_SET, byteArrayOf(0x00, 0x00)
+                                        )
+                                        intCalStatus = if (ok) "Reset to default" else "Write failed"
+                                    }
+                                },
+                                enabled = gattManager.state == GattState.READY,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Reset Cal") }
+                        }
+                        intCalStatus?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (it.contains("failed")) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 }
             }
 
