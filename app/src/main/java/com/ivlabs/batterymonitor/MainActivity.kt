@@ -77,7 +77,10 @@ data class BleDevice(
     val shutterCount: Int = 0,
     val extBatteryPercent: Int = -1,       // -1 = not present
     val extVoltageMillivolts: Int = 0,
-    val isConnected: Boolean = true
+    val isConnected: Boolean = true,
+    val cameraState: Int = 0,             // adv byte [12]; only meaningful for CAMERA type
+    val cameraLiveFlags: Int = 0,         // adv byte [13]; bit0=activityActive bit1=hpOutAsserted
+    val firmwareBuild: String = ""        // formatted from bytes [14-20]; "" = not present
 )
 
 // ---------------------------------------------------------------------------
@@ -232,6 +235,7 @@ class MainActivity : ComponentActivity() {
                         val liveDevice = devices[screen.device.address] ?: screen.device
                         DeviceScreen(
                             device = liveDevice,
+                            bluetoothDevice = screen.bluetoothDevice,
                             gattManager = gattManager,
                             historyStore = deviceHistoryStore,
                             onOpenSettings = {
@@ -240,12 +244,6 @@ class MainActivity : ComponentActivity() {
                                     AppScreen.DeviceSettings(liveDevice, screen.bluetoothDevice)
                                 )
                             },
-                            onOpenCameraConfig = if (liveDevice.deviceType == DeviceType.CAMERA) {
-                                {
-                                    gattManager.connect(screen.bluetoothDevice)
-                                    screenStack.add(AppScreen.CameraConfig(liveDevice, screen.bluetoothDevice))
-                                }
-                            } else null,
                             onBack = { screenStack.removeLast() }
                         )
                     }
@@ -306,6 +304,9 @@ class MainActivity : ComponentActivity() {
         val shutterCount: Int
         var extBatteryPercent = -1
         var extVoltageMillivolts = 0
+        var cameraState = 0
+        var cameraLiveFlags = 0
+        var firmwareBuild = ""
 
         if (data.size >= 11) {
             // New 13-byte packet (11 bytes after company ID strip):
@@ -333,6 +334,20 @@ class MainActivity : ComponentActivity() {
             groupId      = data[7].toInt() and 0xFF
             cellCount    = data[8].toInt() and 0xFF
             shutterCount = ((data[10].toInt() and 0xFF) shl 8) or (data[9].toInt() and 0xFF)
+            if (data.size >= 21 && (data[11].toInt() and 0xFF) == 2) {
+                cameraState     = data[12].toInt() and 0xFF
+                cameraLiveFlags = data[13].toInt() and 0xFF
+                val buildYear   = ((data[15].toInt() and 0xFF) shl 8) or (data[14].toInt() and 0xFF)
+                val buildMonth  = data[16].toInt() and 0xFF
+                val buildDay    = data[17].toInt() and 0xFF
+                val buildHour   = data[18].toInt() and 0xFF
+                val buildMin    = data[19].toInt() and 0xFF
+                val buildSec    = data[20].toInt() and 0xFF
+                firmwareBuild   = if (buildYear >= 2024)
+                    "%04d-%02d-%02d %02d:%02d:%02d".format(
+                        buildYear, buildMonth, buildDay, buildHour, buildMin, buildSec)
+                else ""
+            }
         } else if (data.size >= 8) {
             // Old 10-byte packet (8 bytes after company ID strip) – backward compat:
             // [0]=pct [1-2]=mv [3]=flags [4]=group [5]=cells [6-7]=shutter
@@ -376,7 +391,10 @@ class MainActivity : ComponentActivity() {
             groupId              = groupId,
             shutterCount         = shutterCount,
             extBatteryPercent    = extBatteryPercent,
-            extVoltageMillivolts = extVoltageMillivolts
+            extVoltageMillivolts = extVoltageMillivolts,
+            cameraState          = cameraState,
+            cameraLiveFlags      = cameraLiveFlags,
+            firmwareBuild        = firmwareBuild
         )
         runOnUiThread { devices[device.address] = device }
     }

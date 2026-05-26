@@ -11,6 +11,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
@@ -98,9 +100,9 @@ fun BatteryInfoCard(device: BleDevice) {
 @Composable
 fun CameraCard(
     device: BleDevice,
-    gattManager: BleGattManager,
     onReset: () -> Unit,
-    onOpenCameraConfig: (() -> Unit)? = null
+    resetStatus: String? = null,
+    resetEnabled: Boolean = true
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -121,7 +123,7 @@ fun CameraCard(
                 }
                 Button(
                     onClick = onReset,
-                    enabled = gattManager.state == GattState.READY,
+                    enabled = resetEnabled,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.errorContainer,
                         contentColor = MaterialTheme.colorScheme.onErrorContainer
@@ -130,13 +132,47 @@ fun CameraCard(
                     Text("Reset")
                 }
             }
-            if (onOpenCameraConfig != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(
-                    onClick = onOpenCameraConfig,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Camera Logic")
+            resetStatus?.let {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (it.startsWith("Shutter")) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                )
+            }
+            HorizontalDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "State",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    device.cameraState.cameraStateLabel(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (device.cameraState == 3) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                )
+            }
+            val activityActive = (device.cameraLiveFlags and 0x01) != 0
+            val hpAsserted     = (device.cameraLiveFlags and 0x02) != 0
+            if (activityActive || hpAsserted) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (activityActive) Text(
+                        "● Activity",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (hpAsserted) Text(
+                        "● HP Out",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
                 }
             }
         }

@@ -1,21 +1,20 @@
 package com.ivlabs.batterymonitor
 
+import android.bluetooth.BluetoothDevice
+import android.util.Log
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
@@ -26,38 +25,42 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+
+private const val TAG = "DeviceScreen"
 
 // ---------------------------------------------------------------------------
 // Device dashboard
@@ -67,16 +70,17 @@ import java.util.Locale
 @Composable
 fun DeviceScreen(
     device: BleDevice,
+    bluetoothDevice: BluetoothDevice,
     gattManager: BleGattManager,
     historyStore: DeviceHistoryStore,
     onOpenSettings: () -> Unit,
-    onOpenCameraConfig: (() -> Unit)? = null,
     onBack: () -> Unit
 ) {
     BackHandler { onBack() }
 
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf<List<DeviceHistoryEntry>>(emptyList()) }
+    var resetStatus by remember { mutableStateOf<String?>(null) }
 
     // On page entry: log a history snapshot from the current advertisement data
     // and load the full history list. GATT is not connected on this screen.
@@ -93,15 +97,6 @@ fun DeviceScreen(
             historyStore.load(device.address)
         }
     }
-
-    // Gauge defaults to external battery when present; swipe left/right to toggle.
-    val hasExt = device.extBatteryPercent >= 0
-    var showExternal by remember(hasExt) { mutableStateOf(hasExt) }
-
-    val displayPercent   = if (showExternal) device.extBatteryPercent    else device.batteryPercent
-    val displayVoltageMv = if (showExternal) device.extVoltageMillivolts else device.voltageMillivolts
-    val displayLabel     = if (showExternal) "Device Battery"            else "Internal Battery"
-    val batteryColor     = batteryDisplayColor(displayPercent)
 
     Scaffold(
         topBar = {
@@ -127,81 +122,68 @@ fun DeviceScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // ── Battery gauge ──────────────────────────────────────────────
+            // ── Dual-battery card ───────────────────────────────────────────
             item {
-                var dragAccumulated by remember { mutableStateOf(0f) }
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = displayLabel,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    // Page-indicator dots shown when both batteries are available
-                    if (hasExt) {
-                        Spacer(Modifier.height(4.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = if (showExternal) "\u25CF" else "\u25CB",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (showExternal) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = if (!showExternal) "\u25CF" else "\u25CB",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (!showExternal) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 40.dp, vertical = 8.dp)
-                            .pointerInput(hasExt) {
-                                if (!hasExt) return@pointerInput
-                                detectHorizontalDragGestures(
-                                    onDragStart  = { dragAccumulated = 0f },
-                                    onDragCancel = { dragAccumulated = 0f },
-                                    onDragEnd    = {
-                                        if (dragAccumulated > 40.dp.toPx() ||
-                                            dragAccumulated < -40.dp.toPx()) {
-                                            showExternal = !showExternal
-                                        }
-                                        dragAccumulated = 0f
-                                    },
-                                    onHorizontalDrag = { change, amount ->
-                                        change.consume()
-                                        dragAccumulated += amount
-                                    }
+                val hasExt   = device.extBatteryPercent >= 0
+                val extPct   = device.extBatteryPercent
+                val extMv    = device.extVoltageMillivolts
+                val intPct   = device.batteryPercent
+                val intMv    = device.voltageMillivolts
+                val extColor = batteryDisplayColor(extPct.coerceAtLeast(0))
+                val intColor = batteryDisplayColor(intPct)
+
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (hasExt) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("External Battery", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "${extPct}%",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = extColor
                                 )
                             }
-                    ) {
-                        BatteryGauge(
-                            percent = displayPercent,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(1f)
-                        )
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "${displayPercent}%",
-                                style = MaterialTheme.typography.displaySmall,
-                                fontWeight = FontWeight.Bold,
-                                color = batteryColor
+                            LinearProgressIndicator(
+                                progress = { extPct / 100f },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = extColor
                             )
                             Text(
-                                text = "${"%.3f".format(displayVoltageMv / 1000f)} V",
-                                style = MaterialTheme.typography.headlineSmall,
-                                color = MaterialTheme.colorScheme.onSurface
+                                "${"%.3f".format(extMv / 1000f)} V",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(4.dp))
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Internal Battery", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "${intPct}%",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = intColor
                             )
                         }
+                        LinearProgressIndicator(
+                            progress = { intPct / 100f },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = intColor
+                        )
+                        Text(
+                            "${"%.3f".format(intMv / 1000f)} V",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -221,64 +203,39 @@ fun DeviceScreen(
                             StatItem("Group", if (device.groupId == 0) "None" else "${device.groupId}")
                             StatItem(
                                 label = "Connection",
-                                value = if (device.isConnected) "Advertising" else "Out of Range",
+                                value = if (device.isConnected) "Connected" else "Out of Range",
                                 valueColor = if (device.isConnected) Color(0xFF4CAF50)
                                              else Color.Unspecified
                             )
-                        }
-                        HorizontalDivider()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            StatItem("Chemistry", device.batteryChemistry.displayName())
-                            StatItem("Cells", "${device.cellCount}")
-                            StatItem("Signal", "${device.rssi} dBm")
-                        }
-                        // Internal battery always visible on device page
-                        HorizontalDivider()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            StatItem("Internal Battery", "${device.batteryPercent}%")
-                            StatItem(
-                                "Internal Voltage",
-                                "${"%.3f".format(device.voltageMillivolts / 1000f)} V"
-                            )
-                        }
-                        HorizontalDivider()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            StatItem("MAC Address", device.address)
-                        }
-                        if (device.firmwareBuild.isNotEmpty()) {
-                            HorizontalDivider()
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                StatItem("Built", device.firmwareBuild)
-                            }
                         }
                     }
                 }
             }
 
-            // ── Camera (shutter count + reset + logic) ─────────────────────
+            // ── Camera (shutter count + reset) ─────────────────────────────
             if (device.deviceType == DeviceType.CAMERA) {
                 item {
                     CameraCard(
                         device = device,
-                        gattManager = gattManager,
-                        onOpenCameraConfig = onOpenCameraConfig,
+                        resetStatus = resetStatus,
                         onReset = {
                             scope.launch {
-                                gattManager.writeCharacteristic(
-                                    GattUuids.RESET_SHUTTER, byteArrayOf(0x01)
-                                )
+                                resetStatus = "Connecting\u2026"
+                                gattManager.connect(bluetoothDevice)
+                                val result = withTimeoutOrNull(8_000) {
+                                    snapshotFlow { gattManager.state }
+                                        .first { s -> s == GattState.READY || s == GattState.ERROR }
+                                }
+                                if (result == GattState.READY) {
+                                    val ok = gattManager.writeCharacteristic(
+                                        GattUuids.RESET_SHUTTER, byteArrayOf(0x01)
+                                    )
+                                    resetStatus = if (ok) "Shutter count reset to 0"
+                                                  else "Write failed"
+                                } else {
+                                    resetStatus = "Could not connect to camera"
+                                }
+                                gattManager.disconnect()
                             }
                         }
                     )
@@ -321,41 +278,6 @@ fun DeviceScreen(
 // ---------------------------------------------------------------------------
 // Dashboard helpers
 // ---------------------------------------------------------------------------
-
-@Composable
-private fun BatteryGauge(percent: Int, modifier: Modifier = Modifier) {
-    val fillColor = batteryDisplayColor(percent)
-    val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    Canvas(modifier = modifier) {
-        val strokePx = 30.dp.toPx()
-        val inset = strokePx / 2f
-        val arcTopLeft = Offset(inset, inset)
-        val arcSize = Size(size.width - strokePx, size.height - strokePx)
-        // Background track
-        drawArc(
-            color = trackColor,
-            startAngle = 150f,
-            sweepAngle = 240f,
-            useCenter = false,
-            topLeft = arcTopLeft,
-            size = arcSize,
-            style = Stroke(width = strokePx, cap = StrokeCap.Round)
-        )
-        // Filled portion
-        val sweep = (240f * percent / 100f).coerceIn(0f, 240f)
-        if (sweep > 0f) {
-            drawArc(
-                color = fillColor,
-                startAngle = 150f,
-                sweepAngle = sweep,
-                useCenter = false,
-                topLeft = arcTopLeft,
-                size = arcSize,
-                style = Stroke(width = strokePx, cap = StrokeCap.Round)
-            )
-        }
-    }
-}
 
 @Composable
 private fun StatItem(label: String, value: String, valueColor: Color = Color.Unspecified) {
@@ -456,6 +378,57 @@ fun DeviceSettingsScreen(
     var intCalVoltageInput by remember { mutableStateOf("") }
     var intCalStatus       by remember { mutableStateOf<String?>(null) }
 
+    // Camera logic — only populated when deviceType == CAMERA
+    var camSettingsLoaded            by remember { mutableStateOf(false) }
+    var camEnabled                   by remember { mutableStateOf(false) }
+    var wakeHalfPressHoldSec         by remember { mutableStateOf("10000") }
+    var minHalfPressBeforeShutter    by remember { mutableStateOf("500") }
+    var shutterPulseDuration         by remember { mutableStateOf("100") }
+    var startFrameSpacingTicks       by remember { mutableStateOf("1000") }
+    var postShutterHpHoldTenths      by remember { mutableStateOf("2000") }
+    var hpDebounceMs                 by remember { mutableStateOf("35") }
+    var fpDebounceMs                 by remember { mutableStateOf("20") }
+    var fullPressIgnoreGapTenths     by remember { mutableStateOf("3100") }
+    var frameCount                   by remember { mutableStateOf("4") }
+    var maxSequenceCount             by remember { mutableStateOf("4") }
+    var wakeHoldRefreshPolicy        by remember { mutableIntStateOf(0) }
+    var fullPressWithoutHpPolicy     by remember { mutableIntStateOf(0) }
+    var fpAfterMaxSeqCountPolicy     by remember { mutableIntStateOf(0) }
+    var powerSaveIdleMode            by remember { mutableStateOf(false) }
+    var camSaveStatus                by remember { mutableStateOf<String?>(null) }
+
+    // Serialize camera settings to 22-byte v3 blob
+    fun buildCamBytes(): ByteArray {
+        val shutter = ((shutterPulseDuration.toIntOrNull() ?: 100) / 10).coerceIn(1, 3000)
+        val spacing = ((startFrameSpacingTicks.toIntOrNull() ?: 1000) / 10).coerceIn(1, 3000)
+        val b = ByteArray(22)
+        b[0]  = 3                                                            // version
+        b[1]  = if (camEnabled) 1 else 0
+        b[2]  = ((wakeHalfPressHoldSec.toIntOrNull() ?: 10000) / 1000).coerceIn(1, 60).toByte()
+        b[3]  = ((minHalfPressBeforeShutter.toIntOrNull() ?: 500) / 100).coerceIn(1, 100).toByte()
+        b[4]  = (shutter and 0xFF).toByte()                                  // shutterPulseDuration low
+        b[5]  = ((shutter shr 8) and 0xFF).toByte()                          // shutterPulseDuration high
+        b[6]  = (spacing and 0xFF).toByte()                                  // startFrameSpacingTicks low
+        b[7]  = ((spacing shr 8) and 0xFF).toByte()                          // startFrameSpacingTicks high
+        b[8]  = ((postShutterHpHoldTenths.toIntOrNull() ?: 2000) / 100).coerceIn(1, 200).toByte()
+        b[9]  = (hpDebounceMs.toIntOrNull() ?: 35).coerceIn(1, 250).toByte()
+        b[10] = (fpDebounceMs.toIntOrNull() ?: 20).coerceIn(1, 250).toByte()
+        b[11] = (frameCount.toIntOrNull() ?: 4).coerceIn(0, 64).toByte()
+        b[12] = (maxSequenceCount.toIntOrNull() ?: 4).coerceIn(0, 64).toByte()
+        b[13] = wakeHoldRefreshPolicy.coerceIn(0, 2).toByte()
+        b[14] = 0                                                            // halfPressDuringBurstPolicy (forced)
+        b[15] = fullPressWithoutHpPolicy.coerceIn(0, 1).toByte()
+        b[16] = 0                                                            // activityHalfPressHoldPolicy (forced)
+        b[17] = fpAfterMaxSeqCountPolicy.coerceIn(0, 1).toByte()
+        b[18] = 0                                                            // inputActivePolarity (forced by fw)
+        b[19] = 0                                                            // outputDriveMode (forced by fw)
+        b[20] = if (powerSaveIdleMode) 1 else 0
+        b[21] = ((fullPressIgnoreGapTenths.toIntOrNull() ?: 3100) / 100).coerceIn(5, 250).toByte()
+        val hex = b.joinToString(" ") { "%02X".format(it) }
+        Log.d(TAG, "Write ${b.size} bytes: $hex")
+        return b
+    }
+
     // Read settings from device when GATT is ready
     LaunchedEffect(gattManager.state) {
         if (gattManager.state == GattState.READY) {
@@ -471,6 +444,35 @@ fun DeviceSettingsScreen(
                 ?.firstOrNull()?.let { cellInput = (it.toInt() and 0xFF).coerceIn(1, 4) }
             gattManager.readCharacteristic(GattUuids.GROUP_ID)
                 ?.firstOrNull()?.let { groupInput = it.toInt() and 0xFF }
+
+            if (device.deviceType == DeviceType.CAMERA) {
+                val camBytes = withTimeoutOrNull(5_000) {
+                    gattManager.readCharacteristic(GattUuids.CAMERA_CONFIG)
+                }
+                gattManager.enableNotification(GattUuids.CAMERA_CONFIG_STATUS)
+                if (camBytes != null && camBytes.size >= 22 && (camBytes[0].toInt() and 0xFF) == 3) {
+                    camEnabled                = camBytes[1].toInt() != 0
+                    wakeHalfPressHoldSec      = ((camBytes[2].toInt() and 0xFF) * 1000).toString()
+                    minHalfPressBeforeShutter = ((camBytes[3].toInt() and 0xFF) * 100).toString()
+                    shutterPulseDuration      = ((((camBytes[5].toInt() and 0xFF) shl 8) or
+                                                 (camBytes[4].toInt() and 0xFF)) * 10).toString()
+                    startFrameSpacingTicks    = ((((camBytes[7].toInt() and 0xFF) shl 8) or
+                                                 (camBytes[6].toInt() and 0xFF)) * 10).toString()
+                    postShutterHpHoldTenths   = ((camBytes[8].toInt() and 0xFF) * 100).toString()
+                    hpDebounceMs              = (camBytes[9].toInt() and 0xFF).toString()
+                    fpDebounceMs              = (camBytes[10].toInt() and 0xFF).toString()
+                    frameCount                = (camBytes[11].toInt() and 0xFF).coerceIn(0, 64).toString()
+                    maxSequenceCount          = (camBytes[12].toInt() and 0xFF).coerceIn(0, 64).toString()
+                    wakeHoldRefreshPolicy     = (camBytes[13].toInt() and 0xFF).coerceIn(0, 2)
+                    fullPressWithoutHpPolicy  = (camBytes[15].toInt() and 0xFF).coerceIn(0, 1)
+                    fpAfterMaxSeqCountPolicy  = (camBytes[17].toInt() and 0xFF).coerceIn(0, 1)
+                    powerSaveIdleMode         = camBytes[20].toInt() != 0
+                    fullPressIgnoreGapTenths  = ((camBytes[21].toInt() and 0xFF) * 100).toString()
+                    camSettingsLoaded = true
+                } else if (camBytes != null) {
+                    camSaveStatus = "Unexpected format – reflash firmware"
+                }
+            }
         }
     }
 
@@ -495,7 +497,196 @@ fun DeviceSettingsScreen(
         ) {
             item { GattStatusBanner(gattManager) }
 
-            item { BatteryInfoCard(device) }
+            // ── Camera logic (CAMERA devices only) ─────────────────────────
+            if (device.deviceType == DeviceType.CAMERA) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Logic Bypass", style = MaterialTheme.typography.bodyLarge)
+                            Switch(checked = !camEnabled, onCheckedChange = { camEnabled = !it })
+                        }
+                    }
+                }
+
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text("Sequence", style = MaterialTheme.typography.titleMedium)
+                            NumberField(
+                                label = "Frame Count (0–64)",
+                                value = frameCount,
+                                onValueChange = { frameCount = it },
+                                maxDigits = 2
+                            )
+                            NumberField(
+                                label = "Max Sequence Count (0–64)",
+                                value = maxSequenceCount,
+                                onValueChange = { maxSequenceCount = it },
+                                maxDigits = 2
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text("Timing", style = MaterialTheme.typography.titleMedium)
+                            NumberField(
+                                label = "Wake HP Hold (ms)",
+                                value = wakeHalfPressHoldSec,
+                                onValueChange = { wakeHalfPressHoldSec = it },
+                                maxDigits = 5
+                            )
+                            NumberField(
+                                label = "Min HP Before Shutter (ms)",
+                                value = minHalfPressBeforeShutter,
+                                onValueChange = { minHalfPressBeforeShutter = it },
+                                maxDigits = 5
+                            )
+                            NumberField(
+                                label = "Shutter Pulse Duration (ms)",
+                                value = shutterPulseDuration,
+                                onValueChange = { shutterPulseDuration = it },
+                                maxDigits = 5
+                            )
+                            NumberField(
+                                label = "Frame Spacing (ms)",
+                                value = startFrameSpacingTicks,
+                                onValueChange = { startFrameSpacingTicks = it },
+                                maxDigits = 5
+                            )
+                            NumberField(
+                                label = "Post-Shutter HP Hold (ms)",
+                                value = postShutterHpHoldTenths,
+                                onValueChange = { postShutterHpHoldTenths = it },
+                                maxDigits = 5
+                            )
+                            NumberField(
+                                label = "HP Debounce (ms)",
+                                value = hpDebounceMs,
+                                onValueChange = { hpDebounceMs = it }
+                            )
+                            NumberField(
+                                label = "FP Debounce (ms)",
+                                value = fpDebounceMs,
+                                onValueChange = { fpDebounceMs = it }
+                            )
+                            NumberField(
+                                label = "FP Ignore Gap (ms)",
+                                value = fullPressIgnoreGapTenths,
+                                onValueChange = { fullPressIgnoreGapTenths = it },
+                                maxDigits = 5
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text("Policies", style = MaterialTheme.typography.titleMedium)
+                            PolicyDropdown(
+                                label = "Wake Hold Refresh",
+                                options = listOf("Extend", "Restart", "Ignore While Active"),
+                                selected = wakeHoldRefreshPolicy,
+                                onSelect = { wakeHoldRefreshPolicy = it }
+                            )
+                            PolicyDropdown(
+                                label = "FP Without Prior HP",
+                                options = listOf("Assert HP Then Wait", "Ignore FP"),
+                                selected = fullPressWithoutHpPolicy,
+                                onSelect = { fullPressWithoutHpPolicy = it }
+                            )
+                            PolicyDropdown(
+                                label = "FP After Max Sequences",
+                                options = listOf("Ignore Until Activity End"),
+                                selected = fpAfterMaxSeqCountPolicy,
+                                onSelect = { fpAfterMaxSeqCountPolicy = it }
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Power Save Idle Mode", style = MaterialTheme.typography.bodyLarge)
+                            Switch(
+                                checked = powerSaveIdleMode,
+                                onCheckedChange = { powerSaveIdleMode = it }
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    camSaveStatus?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (it.startsWith("Saved")) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val notifDeferred = async(start = CoroutineStart.UNDISPATCHED) {
+                                    gattManager.waitForNotification(
+                                        GattUuids.CAMERA_CONFIG_STATUS, 3000
+                                    )
+                                }
+                                val packet = buildCamBytes()
+                                val written = gattManager.writeCharacteristic(
+                                    GattUuids.CAMERA_CONFIG, packet
+                                )
+                                if (!written) {
+                                    notifDeferred.cancel()
+                                    camSaveStatus = "Save failed \u2013 not connected"
+                                } else {
+                                    val ack = notifDeferred.await()
+                                    val ackByte = ack?.firstOrNull()?.toInt()?.and(0xFF)
+                                    camSaveStatus = when (ackByte) {
+                                        0x00 -> "Saved successfully"
+                                        0xE1 -> "Rejected: bad packet format"
+                                        0xE2 -> "Rejected: value out of range"
+                                        0xE3 -> "Rejected: device busy \u2013 try again"
+                                        null -> "Sent (no acknowledgment)"
+                                        else -> "Unknown response (0x%02X)".format(ackByte)
+                                    }
+                                }
+                            }
+                        },
+                        enabled = camSettingsLoaded,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Save Camera Logic")
+                    }
+                }
+            }
 
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -695,6 +886,53 @@ fun DeviceSettingsScreen(
                 }
             }
 
+            // ── Device Info card ───────────────────────────────────────────
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("Device Info", style = MaterialTheme.typography.titleMedium)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            StatItem("Chemistry", device.batteryChemistry.displayName())
+                            StatItem("Cells", "${device.cellCount}")
+                            StatItem("Signal", "${device.rssi} dBm")
+                        }
+                        HorizontalDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            StatItem("Internal Battery", "${device.batteryPercent}%")
+                            StatItem(
+                                "Internal Voltage",
+                                "${"%.3f".format(device.voltageMillivolts / 1000f)} V"
+                            )
+                        }
+                        HorizontalDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            StatItem("MAC Address", device.address)
+                        }
+                        if (device.firmwareBuild.isNotEmpty()) {
+                            HorizontalDivider()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                StatItem("Built", device.firmwareBuild)
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 OutlinedButton(
                     onClick = {
@@ -736,4 +974,24 @@ private suspend fun writeAllSettings(
     ok = ok && gattManager.writeCharacteristic(GattUuids.CELL_COUNT,   byteArrayOf(cellCount.toByte()))
     ok = ok && gattManager.writeCharacteristic(GattUuids.GROUP_ID,     byteArrayOf(groupId.toByte()))
     return ok
+}
+
+// ---------------------------------------------------------------------------
+// Policy dropdown (reusable within this file)
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun PolicyDropdown(
+    label: String,
+    options: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit
+) {
+    EnumDropdown(
+        label = label,
+        selected = selected,
+        options = options.indices.toList(),
+        onSelect = onSelect,
+        displayName = { options.getOrElse(it) { "Unknown ($it)" } }
+    )
 }
