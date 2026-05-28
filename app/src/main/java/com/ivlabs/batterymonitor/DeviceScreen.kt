@@ -200,7 +200,7 @@ fun DeviceScreen(
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
                             StatItem("Type", device.deviceType.displayName())
-                            StatItem("Group", if (device.groupId == 0) "None" else "${device.groupId}")
+                            StatItem("Kit", if (device.groupId == 0) "None" else "${device.groupId}")
                             StatItem(
                                 label = "Connection",
                                 value = if (device.isConnected) "Connected" else "Out of Range",

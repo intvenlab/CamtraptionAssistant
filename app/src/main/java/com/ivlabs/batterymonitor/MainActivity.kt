@@ -637,7 +637,7 @@ fun GroupCard(group: ScanListItem.Group, onClick: () -> Unit) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Group ${group.groupId}",
+                        text = "Kit ${group.groupId}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )

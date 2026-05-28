@@ -274,18 +274,18 @@ fun CellCountDropdown(selected: Int, onSelect: (Int) -> Unit) {
 @Composable
 fun GroupDropdown(selected: Int, onSelect: (Int) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    val label = if (selected == 0) "No Group" else "Group $selected"
+    val label = if (selected == 0) "No Kit" else "Kit $selected"
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
         OutlinedTextField(
             value = label, onValueChange = {}, readOnly = true,
-            label = { Text("Group") },
+            label = { Text("Kit") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
             modifier = Modifier.fillMaxWidth().menuAnchor()
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             (0..15).forEach { id ->
                 DropdownMenuItem(
-                    text = { Text(if (id == 0) "No Group (0)" else "Group $id") },
+                    text = { Text(if (id == 0) "No Kit (0)" else "Kit $id") },
                     onClick = { onSelect(id); expanded = false },
                     contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
                 )

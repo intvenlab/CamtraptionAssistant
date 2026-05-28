@@ -117,7 +117,7 @@ fun GroupScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(nameInput.ifBlank { "Group $groupId" }) },
+                title = { Text(nameInput.ifBlank { "Kit $groupId" }) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -152,8 +152,8 @@ fun GroupScreen(
                                 onGroupNameChange(groupId, input)
                             }
                         },
-                        label = { Text("Group Description - (Optional)") },
-                        placeholder = { Text("Group $groupId") },
+                        label = { Text("Kit Description - (Optional)") },
+                        placeholder = { Text("Kit $groupId") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
