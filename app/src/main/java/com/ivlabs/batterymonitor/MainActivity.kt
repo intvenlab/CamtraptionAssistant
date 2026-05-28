@@ -39,12 +39,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -119,6 +132,7 @@ fun buildScanList(
                 )
             )
         }
+        .sortedBy { it.groupId }
 
     val individual = configured
         .filter { it.groupId == 0 }
@@ -157,6 +171,7 @@ class MainActivity : ComponentActivity() {
     private val groupNames = mutableStateMapOf<Int, String>()
 
     private val deviceHistoryStore by lazy { DeviceHistoryStore(this) }
+    private val knownDeviceStore by lazy { KnownDeviceStore(this) }
 
     private val handler = Handler(Looper.getMainLooper())
     private val staleDeviceRunnable = object : Runnable {
@@ -190,6 +205,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         groupNames.putAll(groupNameStore.loadAll())
+        lifecycleScope.launch(Dispatchers.IO) {
+            val saved = knownDeviceStore.loadAll()
+            withContext(Dispatchers.Main) {
+                saved.forEach { d -> devices.getOrPut(d.address) { d } }
+            }
+        }
         setContent {
             BatteryMonitorTheme {
                 val screen = screenStack.last()
@@ -208,6 +229,14 @@ class MainActivity : ComponentActivity() {
                             val btDevice = bluetoothAdapter.getRemoteDevice(device.address)
                             screenStack.add(AppScreen.Setup(device, btDevice))
                             gattManager.connect(btDevice)
+                        },
+                        onForgetKit = { groupId ->
+                            devices.keys
+                                .filter { devices[it]?.groupId == groupId }
+                                .forEach { devices.remove(it) }
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                knownDeviceStore.forgetKit(groupId)
+                            }
                         },
                         onInjectTestDevices = if (BuildConfig.DEBUG) ::injectTestDevices else null
                     )
@@ -248,8 +277,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     is AppScreen.DeviceSettings -> DeviceSettingsScreen(
-                        device = screen.device,
-                        gattManager = gattManager,
+                        device       = screen.device,
+                        gattManager  = gattManager,
+                        historyStore = deviceHistoryStore,
                         onBack = { gattManager.disconnect(); screenStack.removeLast() },
                         onFactoryReset = {
                             repeat(2) { if (screenStack.size > 1) screenStack.removeLast() }
@@ -397,6 +427,7 @@ class MainActivity : ComponentActivity() {
             firmwareBuild        = firmwareBuild
         )
         runOnUiThread { devices[device.address] = device }
+        lifecycleScope.launch(Dispatchers.IO) { knownDeviceStore.save(device) }
     }
 
     private fun hasPermissions() = buildPermissionList().all {
@@ -463,11 +494,12 @@ fun BleMonitorScreen(
     onNavigateToGroup: (groupId: Int, groupName: String?) -> Unit,
     onNavigateToDevice: (BleDevice) -> Unit,
     onNavigateToSetup: (BleDevice) -> Unit,
+    onForgetKit: (groupId: Int) -> Unit,
     onInjectTestDevices: (() -> Unit)? = null
 ) {
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Camtraptions Battery Monitor") })
+            TopAppBar(title = { Text("Camtraption Assistant") })
         },
         floatingActionButton = {
             onInjectTestDevices?.let {
@@ -553,7 +585,8 @@ fun BleMonitorScreen(
                                 is ScanListItem.Group ->
                                     GroupCard(
                                         group = item,
-                                        onClick = { onNavigateToGroup(item.groupId, item.groupName) }
+                                        onClick = { onNavigateToGroup(item.groupId, item.groupName) },
+                                        onForgetKit = { onForgetKit(item.groupId) }
                                     )
                                 is ScanListItem.IndividualDevice ->
                                     IndividualDeviceCard(
@@ -621,48 +654,69 @@ fun UnconfiguredDeviceCard(device: BleDevice, onClick: () -> Unit) {
 }
 
 @Composable
-fun GroupCard(group: ScanListItem.Group, onClick: () -> Unit) {
+fun GroupCard(
+    group: ScanListItem.Group,
+    onClick: () -> Unit,
+    onForgetKit: () -> Unit
+) {
+    var showConfirm by remember { mutableStateOf(false) }
+
     val camera = group.devices.firstOrNull { it.deviceType == DeviceType.CAMERA }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .pointerInput(Unit) {
+                val ps = this
+                coroutineScope {
+                    while (true) {
+                        // wait for any pointer to press down
+                        ps.awaitPointerEventScope {
+                            while (awaitPointerEvent().changes.none { it.pressed }) { }
+                        }
+                        var longPressed = false
+                        val job = launch {
+                            delay(2_000L)
+                            longPressed = true
+                            showConfirm = true
+                        }
+                        // wait for all pointers to lift
+                        ps.awaitPointerEventScope {
+                            while (awaitPointerEvent().changes.any { it.pressed }) { }
+                        }
+                        job.cancel()
+                        if (!longPressed) onClick()
+                    }
+                }
+            }
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Kit ${group.groupId}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (!group.groupName.isNullOrBlank()) {
                     Text(
-                        text = "Kit ${group.groupId}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
+                        text = group.groupName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (!group.groupName.isNullOrBlank()) {
+                }
+                camera?.let {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("\uD83D\uDCF7", style = MaterialTheme.typography.bodySmall)
                         Text(
-                            text = group.groupName,
+                            text = "Shutters: %,d".format(it.shutterCount),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    camera?.let {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text("\uD83D\uDCF7", style = MaterialTheme.typography.bodySmall)
-                            Text(
-                                text = "Shutters: %,d".format(it.shutterCount),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
                 }
-                Text(text = "\u2192", style = MaterialTheme.typography.titleMedium)
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             group.devices.forEachIndexed { index, device ->
@@ -672,6 +726,27 @@ fun GroupCard(group: ScanListItem.Group, onClick: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (showConfirm) {
+        AlertDialog(
+            onDismissRequest = { showConfirm = false },
+            title = { Text("Forget Kit ${group.groupId}?") },
+            text = {
+                Text(
+                    "Removes ${group.devices.size} device(s) from memory. " +
+                    "If they are still nearby they will reappear automatically."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onForgetKit(); showConfirm = false }) {
+                    Text("Forget", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirm = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -697,21 +772,25 @@ fun DeviceRow(device: BleDevice) {
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f)
         )
-        LinearProgressIndicator(
-            progress = { pct.coerceAtLeast(0) / 100f },
-            modifier = Modifier.weight(2f),
-            color = batteryDisplayColor(pct.coerceAtLeast(0))
-        )
-        Text(
-            text = if (pct >= 0) "$pct%" else "--",
-            style = MaterialTheme.typography.bodySmall,
-            color = batteryDisplayColor(pct.coerceAtLeast(0))
-        )
-        if (pct in 0..19) {
-            Text(text = "\u26A0", style = MaterialTheme.typography.bodySmall)
+        if (device.isConnected) {
+            LinearProgressIndicator(
+                progress = { pct.coerceAtLeast(0) / 100f },
+                modifier = Modifier.weight(2f),
+                color = batteryDisplayColor(pct.coerceAtLeast(0))
+            )
+            Text(
+                text = if (pct >= 0) "$pct%" else "--",
+                style = MaterialTheme.typography.bodySmall,
+                color = batteryDisplayColor(pct.coerceAtLeast(0))
+            )
+            if (pct in 0..19) {
+                Text(text = "\u26A0", style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            Spacer(modifier = Modifier.weight(2f))
         }
         Text(
-            text = if (device.isConnected) "Connected" else "Disconnected",
+            text = if (device.lastSeen > 0L) formatLastSeen(device.lastSeen) else "",
             style = MaterialTheme.typography.labelSmall,
             color = if (device.isConnected) Color(0xFF2E7D32)
                     else MaterialTheme.colorScheme.onSurfaceVariant
@@ -787,5 +866,20 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                 )
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+internal fun formatLastSeen(ts: Long): String {
+    val elapsed = System.currentTimeMillis() - ts
+    return when {
+        elapsed < 60_000L        -> "Just now"
+        elapsed < 3_600_000L     -> "${elapsed / 60_000} min ago"
+        elapsed < 86_400_000L    -> "${elapsed / 3_600_000} hr ago"
+        elapsed < 172_800_000L   -> "Yesterday"
+        else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(ts))
     }
 }

@@ -7,36 +7,49 @@ import java.io.File
 
 data class DeviceHistoryEntry(
     val timestamp: Long,
-    val batteryPercent: Int,
-    val voltageMillivolts: Int,
-    val rssi: Int,
-    val shutterCount: Int = 0
+    val eventType: String,            // "Connect" | "Disconnect" | "Shutter" | "Battery" | "ExtBattRemoved" | "ExtBattAttached"
+    val shutterCount: Int = 0,
+    val batteryPercent: Int,          // ext battery % (–1 = absent)
+    val voltageMillivolts: Int,       // ext voltage mV
+    // Full telemetry (stored, shown on expand)
+    val intBatteryPercent: Int = -1,
+    val intVoltageMillivolts: Int = 0,
+    val rssi: Int = 0,
+    val cameraState: Int = 0,
+    val cameraLiveFlags: Int = 0,
+    val firmwareBuild: String = ""
 )
 
 class DeviceHistoryStore(private val context: Context) {
 
     companion object {
-        private const val MAX_ENTRIES = 100
+        private const val MAX_ENTRIES = 500
     }
 
-    private fun fileFor(address: String): File {
+    internal fun getFile(address: String): File {
         val safe = address.replace(":", "_")
         return File(context.filesDir, "device_history_$safe.json")
     }
 
     fun load(address: String): List<DeviceHistoryEntry> {
-        val file = fileFor(address)
+        val file = getFile(address)
         if (!file.exists()) return emptyList()
         return try {
             val array = JSONArray(file.readText())
             (0 until array.length()).map { i ->
                 val obj = array.getJSONObject(i)
                 DeviceHistoryEntry(
-                    timestamp         = obj.getLong("ts"),
-                    batteryPercent    = obj.getInt("pct"),
-                    voltageMillivolts = obj.getInt("mv"),
-                    rssi              = obj.getInt("rssi"),
-                    shutterCount      = obj.optInt("shutter", 0)
+                    timestamp            = obj.getLong("ts"),
+                    eventType            = obj.optString("evt", "Connect"),
+                    shutterCount         = obj.optInt("shutter", 0),
+                    batteryPercent       = obj.getInt("pct"),
+                    voltageMillivolts    = obj.getInt("mv"),
+                    intBatteryPercent    = obj.optInt("ipct", -1),
+                    intVoltageMillivolts = obj.optInt("imv", 0),
+                    rssi                 = obj.optInt("rssi", 0),
+                    cameraState          = obj.optInt("camst", 0),
+                    cameraLiveFlags      = obj.optInt("camlf", 0),
+                    firmwareBuild        = obj.optString("fw", "")
                 )
             }
         } catch (e: Exception) {
@@ -52,12 +65,18 @@ class DeviceHistoryStore(private val context: Context) {
         trimmed.forEach { e ->
             array.put(JSONObject().apply {
                 put("ts",      e.timestamp)
+                put("evt",     e.eventType)
+                put("shutter", e.shutterCount)
                 put("pct",     e.batteryPercent)
                 put("mv",      e.voltageMillivolts)
+                put("ipct",    e.intBatteryPercent)
+                put("imv",     e.intVoltageMillivolts)
                 put("rssi",    e.rssi)
-                put("shutter", e.shutterCount)
+                put("camst",   e.cameraState)
+                put("camlf",   e.cameraLiveFlags)
+                put("fw",      e.firmwareBuild)
             })
         }
-        try { fileFor(address).writeText(array.toString()) } catch (e: Exception) {}
+        try { getFile(address).writeText(array.toString()) } catch (e: Exception) {}
     }
 }

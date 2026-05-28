@@ -1,8 +1,10 @@
 package com.ivlabs.batterymonitor
 
 import android.bluetooth.BluetoothDevice
+import android.content.Intent
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -40,23 +44,27 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import kotlin.math.abs
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -81,21 +89,81 @@ fun DeviceScreen(
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf<List<DeviceHistoryEntry>>(emptyList()) }
     var resetStatus by remember { mutableStateOf<String?>(null) }
+    var expandedEntries by remember { mutableStateOf(emptySet<Int>()) }
 
-    // On page entry: log a history snapshot from the current advertisement data
-    // and load the full history list. GATT is not connected on this screen.
-    LaunchedEffect(device.address) {
+    val currentDeviceState = rememberUpdatedState(device)
+
+    suspend fun addHistoryEntry(eventType: String, dev: BleDevice) {
         val entry = DeviceHistoryEntry(
-            timestamp         = System.currentTimeMillis(),
-            batteryPercent    = device.extBatteryPercent,
-            voltageMillivolts = device.extVoltageMillivolts,
-            rssi              = device.rssi,
-            shutterCount      = device.shutterCount
+            timestamp            = System.currentTimeMillis(),
+            eventType            = eventType,
+            shutterCount         = dev.shutterCount,
+            batteryPercent       = dev.extBatteryPercent,
+            voltageMillivolts    = dev.extVoltageMillivolts,
+            intBatteryPercent    = dev.batteryPercent,
+            intVoltageMillivolts = dev.voltageMillivolts,
+            rssi                 = dev.rssi,
+            cameraState          = dev.cameraState,
+            cameraLiveFlags      = dev.cameraLiveFlags,
+            firmwareBuild        = dev.firmwareBuild
         )
         history = withContext(Dispatchers.IO) {
-            historyStore.append(device.address, entry)
-            historyStore.load(device.address)
+            historyStore.append(dev.address, entry)
+            historyStore.load(dev.address)
         }
+    }
+
+    // Connection-aware event logger
+    LaunchedEffect(device.address) {
+        var prevConnected     = currentDeviceState.value.isConnected
+        var lastLoggedVoltage = currentDeviceState.value.extVoltageMillivolts
+        var prevShutter       = currentDeviceState.value.shutterCount
+        var prevExtPresent    = currentDeviceState.value.extBatteryPercent >= 0
+
+        // Always load existing history so logs are visible even when not connected
+        history = withContext(Dispatchers.IO) { historyStore.load(device.address) }
+
+        // Log Connect on entry only if already in range
+        if (prevConnected) {
+            addHistoryEntry("Connect", currentDeviceState.value)
+        }
+
+        snapshotFlow { currentDeviceState.value }
+            .drop(1)
+            .collect { dev ->
+                val nowConnected = dev.isConnected
+
+                when {
+                    !prevConnected && nowConnected -> {
+                        // Device came back into range
+                        addHistoryEntry("Connect", dev)
+                        lastLoggedVoltage = dev.extVoltageMillivolts
+                        prevShutter       = dev.shutterCount
+                        prevExtPresent    = dev.extBatteryPercent >= 0
+                    }
+                    prevConnected && !nowConnected -> {
+                        // Device went out of range
+                        addHistoryEntry("Disconnect", dev)
+                    }
+                }
+                prevConnected = nowConnected
+
+                if (nowConnected) {
+                    if (dev.shutterCount != prevShutter) {
+                        addHistoryEntry("Shutter", dev)
+                        prevShutter = dev.shutterCount
+                    }
+                    val voltDelta = abs(dev.extVoltageMillivolts - lastLoggedVoltage)
+                    if (voltDelta >= 1000 && dev.extVoltageMillivolts > 0) {
+                        addHistoryEntry("Battery", dev)
+                        lastLoggedVoltage = dev.extVoltageMillivolts
+                    }
+                    val nowPresent = dev.extBatteryPercent >= 0
+                    if (prevExtPresent && !nowPresent)  addHistoryEntry("ExtBattRemoved", dev)
+                    if (!prevExtPresent && nowPresent)  addHistoryEntry("ExtBattAttached", dev)
+                    prevExtPresent = nowPresent
+                }
+            }
     }
 
     Scaffold(
@@ -137,12 +205,12 @@ fun DeviceScreen(
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        if (hasExt) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("External Battery", style = MaterialTheme.typography.bodyLarge)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("External Battery", style = MaterialTheme.typography.bodyLarge)
+                            if (hasExt) {
                                 Text(
                                     "${extPct}%",
                                     style = MaterialTheme.typography.bodyLarge,
@@ -150,6 +218,8 @@ fun DeviceScreen(
                                     color = extColor
                                 )
                             }
+                        }
+                        if (hasExt) {
                             LinearProgressIndicator(
                                 progress = { extPct / 100f },
                                 modifier = Modifier.fillMaxWidth(),
@@ -160,8 +230,14 @@ fun DeviceScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(Modifier.height(4.dp))
+                        } else {
+                            Text(
+                                "No Battery Connected",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
                         }
+                        Spacer(Modifier.height(4.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
@@ -202,8 +278,10 @@ fun DeviceScreen(
                             StatItem("Type", device.deviceType.displayName())
                             StatItem("Kit", if (device.groupId == 0) "None" else "${device.groupId}")
                             StatItem(
-                                label = "Connection",
-                                value = if (device.isConnected) "Connected" else "Out of Range",
+                                label = if (device.isConnected) "Connection" else "Last Seen",
+                                value = if (device.isConnected) "Connected"
+                                        else if (device.lastSeen > 0L) formatLastSeen(device.lastSeen)
+                                        else "--",
                                 valueColor = if (device.isConnected) Color(0xFF4CAF50)
                                              else Color.Unspecified
                             )
@@ -254,7 +332,7 @@ fun DeviceScreen(
             item {
                 if (history.isEmpty()) {
                     Text(
-                        text = "No history yet. Stats are recorded each time you open this device.",
+                        text = "No history yet. Events are logged automatically.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -262,7 +340,17 @@ fun DeviceScreen(
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                             history.forEachIndexed { idx, entry ->
-                                HistoryEntryRow(entry, device.deviceType)
+                                HistoryEntryRow(
+                                    entry = entry,
+                                    deviceType = device.deviceType,
+                                    isExpanded = idx in expandedEntries,
+                                    onToggle = {
+                                        expandedEntries = if (idx in expandedEntries)
+                                            expandedEntries - idx
+                                        else
+                                            expandedEntries + idx
+                                    }
+                                )
                                 if (idx < history.lastIndex) {
                                     HorizontalDivider()
                                 }
@@ -297,59 +385,118 @@ private fun StatItem(label: String, value: String, valueColor: Color = Color.Uns
 }
 
 @Composable
-private fun HistoryEntryRow(entry: DeviceHistoryEntry, deviceType: DeviceType) {
-    Row(
+private fun HistoryEntryRow(
+    entry: DeviceHistoryEntry,
+    deviceType: DeviceType,
+    isExpanded: Boolean,
+    onToggle: () -> Unit
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .clickable { onToggle() }
     ) {
-        Text(
-            text = formatTimestamp(entry.timestamp),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        if (deviceType == DeviceType.CAMERA) {
-            Spacer(Modifier.width(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
-                text = "S: ${entry.shutterCount}",
+                text = formatTimestamp(entry.timestamp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = eventBadgeColor(entry.eventType)
+            ) {
+                Text(
+                    text = eventBadgeLabel(entry.eventType),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+            if (deviceType == DeviceType.CAMERA) {
+                Text(
+                    text = "S: ${entry.shutterCount}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = if (entry.batteryPercent >= 0) "${entry.batteryPercent}%" else "--",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = batteryDisplayColor(entry.batteryPercent.coerceAtLeast(0))
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (entry.voltageMillivolts > 0) "${"%.3f".format(entry.voltageMillivolts / 1000f)} V" else "--",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = if (entry.batteryPercent >= 0) "${entry.batteryPercent}%" else "--",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = batteryDisplayColor(entry.batteryPercent.coerceAtLeast(0))
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = if (entry.voltageMillivolts > 0) "${"%.3f".format(entry.voltageMillivolts / 1000f)}V" else "--",
-            style = MaterialTheme.typography.bodySmall
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = "${entry.rssi} dBm",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (isExpanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "Int: ${entry.intBatteryPercent}% / ${"%.3f".format(entry.intVoltageMillivolts / 1000f)} V",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "RSSI: ${entry.rssi} dBm",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (deviceType == DeviceType.CAMERA) {
+                    Text(
+                        text = "Camera: state=0x%02X flags=0x%02X".format(entry.cameraState, entry.cameraLiveFlags),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (entry.firmwareBuild.isNotEmpty()) {
+                    Text(
+                        text = "FW: ${entry.firmwareBuild}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
 }
 
-private fun formatTimestamp(ts: Long): String {
-    val today = Calendar.getInstance()
-    val then  = Calendar.getInstance().also { it.timeInMillis = ts }
-    return if (
-        today.get(Calendar.YEAR)       == then.get(Calendar.YEAR) &&
-        today.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
-    ) {
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
-    } else {
-        SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(ts))
-    }
+private fun formatTimestamp(ts: Long): String =
+    SimpleDateFormat("MMM d, HH:mm:ss", Locale.getDefault()).format(Date(ts))
+
+private fun eventBadgeLabel(eventType: String) = when (eventType) {
+    "Connect"         -> "Connect"
+    "Disconnect"      -> "Disconnect"
+    "Shutter"         -> "Shutter"
+    "Battery"         -> "Battery"
+    "ExtBattRemoved"  -> "Batt Out"
+    "ExtBattAttached" -> "Batt In"
+    else              -> eventType
+}
+
+@Composable
+private fun eventBadgeColor(eventType: String): Color = when (eventType) {
+    "Connect"         -> MaterialTheme.colorScheme.primary
+    "Disconnect"      -> MaterialTheme.colorScheme.onSurfaceVariant
+    "Shutter"         -> MaterialTheme.colorScheme.secondary
+    "Battery"         -> MaterialTheme.colorScheme.tertiary
+    "ExtBattRemoved"  -> MaterialTheme.colorScheme.error
+    "ExtBattAttached" -> Color(0xFF2E7D32)
+    else              -> MaterialTheme.colorScheme.surfaceVariant
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +508,7 @@ private fun formatTimestamp(ts: Long): String {
 fun DeviceSettingsScreen(
     device: BleDevice,
     gattManager: BleGattManager,
+    historyStore: DeviceHistoryStore,
     onBack: () -> Unit,
     onFactoryReset: () -> Unit
 ) {
@@ -949,6 +1097,34 @@ fun DeviceSettingsScreen(
                     )
                 ) {
                     Text("Factory Reset")
+                }
+            }
+
+            item {
+                val context = LocalContext.current
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        scope.launch {
+                            val file = historyStore.getFile(device.address)
+                            if (!file.exists()) return@launch
+                            val uri = FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.provider",
+                                file
+                            )
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/json"
+                                putExtra(Intent.EXTRA_SUBJECT, "Device Log: ${if (device.groupId != 0) "Kit ${device.groupId} - " else ""}${device.name ?: device.address}")
+                                putExtra(Intent.EXTRA_TEXT, "MAC: ${device.address}\n\nSent from Camtraption Assistant App")
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Send Log"))
+                        }
+                    }
+                ) {
+                    Text("Send Log")
                 }
             }
         }

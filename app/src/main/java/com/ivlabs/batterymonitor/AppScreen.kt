@@ -55,7 +55,8 @@ object GattUuids {
     val CAMERA_CONFIG = UUID.fromString("ca50000a-0000-0000-0000-000000000000")!!
     val TELEMETRY     = UUID.fromString("ca50000b-0000-0000-0000-000000000000")!!
     val CAL_SET       = UUID.fromString("ca50000c-0000-0000-0000-000000000000")!!
-    val INT_CAL_SET   = UUID.fromString("ca50000d-0000-0000-0000-000000000000")!!
+    val INT_CAL_SET          = UUID.fromString("ca50000d-0000-0000-0000-000000000000")!!
+    val CAMERA_CONFIG_STATUS = UUID.fromString("ca50000e-0000-0000-0000-000000000000")!!
 }
 
 // ---------------------------------------------------------------------------
