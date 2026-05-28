@@ -1115,7 +1115,7 @@ fun DeviceSettingsScreen(
                             )
                             val intent = Intent(Intent.ACTION_SEND).apply {
                                 type = "application/json"
-                                putExtra(Intent.EXTRA_SUBJECT, "Device Log: ${if (device.groupId != 0) "Kit ${device.groupId} - " else ""}${device.name ?: device.address}")
+                                putExtra(Intent.EXTRA_SUBJECT, "Device Log: ${if (groupInput != 0) "Kit $groupInput - " else ""}${device.name ?: device.address}")
                                 putExtra(Intent.EXTRA_TEXT, "MAC: ${device.address}\n\nSent from Camtraption Assistant App")
                                 putExtra(Intent.EXTRA_STREAM, uri)
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

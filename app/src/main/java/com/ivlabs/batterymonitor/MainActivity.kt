@@ -790,7 +790,8 @@ fun DeviceRow(device: BleDevice) {
             Spacer(modifier = Modifier.weight(2f))
         }
         Text(
-            text = if (device.lastSeen > 0L) formatLastSeen(device.lastSeen) else "",
+            text = if (device.isConnected) "Connected"
+                   else if (device.lastSeen > 0L) formatLastSeen(device.lastSeen) else "",
             style = MaterialTheme.typography.labelSmall,
             color = if (device.isConnected) Color(0xFF2E7D32)
                     else MaterialTheme.colorScheme.onSurfaceVariant
@@ -832,7 +833,8 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = if (device.isConnected) "Connected" else "Disconnected",
+                            text = if (device.isConnected) "Connected"
+                                   else if (device.lastSeen > 0L) formatLastSeen(device.lastSeen) else "Disconnected",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (device.isConnected) Color(0xFF2E7D32)
                                     else MaterialTheme.colorScheme.onSurfaceVariant
