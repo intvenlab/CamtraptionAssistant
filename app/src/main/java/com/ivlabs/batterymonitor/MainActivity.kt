@@ -16,6 +16,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,8 +43,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.input.pointer.pointerInput
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -667,27 +666,10 @@ fun GroupCard(
         modifier = Modifier
             .fillMaxWidth()
             .pointerInput(Unit) {
-                val ps = this
-                coroutineScope {
-                    while (true) {
-                        // wait for any pointer to press down
-                        ps.awaitPointerEventScope {
-                            while (awaitPointerEvent().changes.none { it.pressed }) { }
-                        }
-                        var longPressed = false
-                        val job = launch {
-                            delay(2_000L)
-                            longPressed = true
-                            showConfirm = true
-                        }
-                        // wait for all pointers to lift
-                        ps.awaitPointerEventScope {
-                            while (awaitPointerEvent().changes.any { it.pressed }) { }
-                        }
-                        job.cancel()
-                        if (!longPressed) onClick()
-                    }
-                }
+                detectTapGestures(
+                    onTap = { onClick() },
+                    onLongPress = { showConfirm = true }
+                )
             }
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
