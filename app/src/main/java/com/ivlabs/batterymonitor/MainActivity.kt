@@ -72,8 +72,21 @@ import com.ivlabs.batterymonitor.ui.theme.BatteryMonitorTheme
 // Domain model
 // ---------------------------------------------------------------------------
 
-enum class DeviceType { BATTERY_MONITOR, CAMERA, STROBE, FOCUS_LIGHT }
+enum class DeviceType { BATTERY_MONITOR, CAMERA, STROBE, FOCUS_LIGHT, FEEDER }
 enum class BatteryChemistry { LIPO, LIFEPO4, NIMH, ALKALINE }
+
+// Advertisement flags byte: bits1-2 hold the low 2 bits of device type, bit5 holds the MSB
+// (widened from a 2-bit to a 3-bit field to make room for FEEDER; bits3-4 remain chemistry).
+private fun deviceTypeFromFlags(flags: Int): DeviceType {
+    val raw = ((flags shr 1) and 0x03) or (((flags shr 5) and 0x01) shl 2)
+    return when (raw) {
+        1    -> DeviceType.CAMERA
+        2    -> DeviceType.STROBE
+        3    -> DeviceType.FOCUS_LIGHT
+        4    -> DeviceType.FEEDER
+        else -> DeviceType.BATTERY_MONITOR
+    }
+}
 
 data class BleDevice(
     val address: String,
@@ -285,11 +298,6 @@ class MainActivity : ComponentActivity() {
                             repeat(2) { if (screenStack.size > 1) screenStack.removeLast() }
                         }
                     )
-                    is AppScreen.CameraConfig -> CameraConfigScreen(
-                        device = screen.device,
-                        gattManager = gattManager,
-                        onBack = { gattManager.disconnect(); screenStack.removeLast() }
-                    )
                     is AppScreen.Setup -> SetupScreen(
                         device = screen.device,
                         gattManager = gattManager,
@@ -349,12 +357,7 @@ class MainActivity : ComponentActivity() {
             extVoltageMillivolts = if (extBatteryPercent < 0) 0 else rawExtMv
             val flags = data[6].toInt() and 0xFF
             isConfigured = (flags and 0x01) != 0
-            deviceType = when ((flags shr 1) and 0x03) {
-                1    -> DeviceType.CAMERA
-                2    -> DeviceType.STROBE
-                3    -> DeviceType.FOCUS_LIGHT
-                else -> DeviceType.BATTERY_MONITOR
-            }
+            deviceType = deviceTypeFromFlags(flags)
             batteryChemistry = when ((flags shr 3) and 0x03) {
                 1    -> BatteryChemistry.LIFEPO4
                 2    -> BatteryChemistry.NIMH
@@ -383,12 +386,7 @@ class MainActivity : ComponentActivity() {
             // [0]=pct [1-2]=mv [3]=flags [4]=group [5]=cells [6-7]=shutter
             val flags = data[3].toInt() and 0xFF
             isConfigured = (flags and 0x01) != 0
-            deviceType = when ((flags shr 1) and 0x03) {
-                1    -> DeviceType.CAMERA
-                2    -> DeviceType.STROBE
-                3    -> DeviceType.FOCUS_LIGHT
-                else -> DeviceType.BATTERY_MONITOR
-            }
+            deviceType = deviceTypeFromFlags(flags)
             batteryChemistry = when ((flags shr 3) and 0x03) {
                 1    -> BatteryChemistry.LIFEPO4
                 2    -> BatteryChemistry.NIMH
@@ -470,6 +468,8 @@ class MainActivity : ComponentActivity() {
                 isConfigured = true, deviceType = DeviceType.STROBE,          groupId = 1),
             BleDevice("AA:BB:CC:DD:EE:05", "Base Station",  91, 4180, -48, now,
                 isConfigured = true, deviceType = DeviceType.BATTERY_MONITOR, groupId = 1),
+            BleDevice("AA:BB:CC:DD:EE:06", "Feeder A",      63, 3980, -59, now,
+                isConfigured = true, deviceType = DeviceType.FEEDER,          groupId = 1),
         ).forEach { devices[it.address] = it }
     }
 
@@ -763,6 +763,7 @@ fun DeviceRow(device: BleDevice) {
                 DeviceType.CAMERA      -> "\uD83D\uDCF7"  // 📷
                 DeviceType.STROBE      -> "\uD83D\uDCA1"  // 💡
                 DeviceType.FOCUS_LIGHT -> "\uD83D\uDD26"  // 🔦
+                DeviceType.FEEDER      -> "💧"  // (droplet)
                 else                   -> "\uD83D\uDD0B"  // 🔋
             },
             style = MaterialTheme.typography.bodyMedium
@@ -823,6 +824,7 @@ fun IndividualDeviceCard(device: BleDevice, onClick: () -> Unit) {
                             DeviceType.CAMERA      -> "\uD83D\uDCF7"  // 📷
                             DeviceType.STROBE      -> "\uD83D\uDCA1"  // 💡
                             DeviceType.FOCUS_LIGHT -> "\uD83D\uDD26"  // 🔦
+                            DeviceType.FEEDER      -> "💧"  // (droplet)
                             else                   -> "\uD83D\uDD0B"  // 🔋
                         },
                         style = MaterialTheme.typography.titleMedium

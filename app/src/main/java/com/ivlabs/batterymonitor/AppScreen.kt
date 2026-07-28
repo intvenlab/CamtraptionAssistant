@@ -30,10 +30,6 @@ sealed class AppScreen {
         val bluetoothDevice: BluetoothDevice
     ) : AppScreen()
 
-    data class CameraConfig(
-        val device: BleDevice,
-        val bluetoothDevice: BluetoothDevice
-    ) : AppScreen()
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +53,8 @@ object GattUuids {
     val CAL_SET       = UUID.fromString("ca50000c-0000-0000-0000-000000000000")!!
     val INT_CAL_SET          = UUID.fromString("ca50000d-0000-0000-0000-000000000000")!!
     val CAMERA_CONFIG_STATUS = UUID.fromString("ca50000e-0000-0000-0000-000000000000")!!
+    val FEEDER_CONFIG        = UUID.fromString("ca50000f-0000-0000-0000-000000000000")!!
+    val FEEDER_CONFIG_STATUS = UUID.fromString("ca500010-0000-0000-0000-000000000000")!!
 }
 
 // ---------------------------------------------------------------------------
@@ -66,9 +64,10 @@ object GattUuids {
 // Sort order within a group: cameras first, then strobes, focus lights, battery monitors last
 fun DeviceType.sortOrder() = when (this) {
     DeviceType.CAMERA          -> 0
-    DeviceType.STROBE          -> 1
-    DeviceType.FOCUS_LIGHT     -> 2
-    DeviceType.BATTERY_MONITOR -> 3
+    DeviceType.FEEDER          -> 1
+    DeviceType.STROBE          -> 2
+    DeviceType.FOCUS_LIGHT     -> 3
+    DeviceType.BATTERY_MONITOR -> 4
 }
 
 fun DeviceType.displayName() = when (this) {
@@ -76,6 +75,7 @@ fun DeviceType.displayName() = when (this) {
     DeviceType.CAMERA          -> "Camera"
     DeviceType.STROBE          -> "Strobe"
     DeviceType.FOCUS_LIGHT     -> "Focus Light"
+    DeviceType.FEEDER          -> "Feeder"
 }
 
 fun BatteryChemistry.displayName() = when (this) {

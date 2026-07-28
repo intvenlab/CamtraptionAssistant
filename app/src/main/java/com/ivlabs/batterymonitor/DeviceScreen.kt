@@ -545,6 +545,14 @@ fun DeviceSettingsScreen(
     var powerSaveIdleMode            by remember { mutableStateOf(false) }
     var camSaveStatus                by remember { mutableStateOf<String?>(null) }
 
+    // Feeder logic — only populated when deviceType == FEEDER
+    var feederSettingsLoaded by remember { mutableStateOf(false) }
+    var feederEnabled        by remember { mutableStateOf(false) }
+    var pulseStretchMinMs    by remember { mutableStateOf("100") }
+    var pumpOnMs             by remember { mutableStateOf("2000") }
+    var pumpOffMs            by remember { mutableStateOf("10000") }
+    var feederSaveStatus     by remember { mutableStateOf<String?>(null) }
+
     // Serialize camera settings to 22-byte v3 blob
     fun buildCamBytes(): ByteArray {
         val shutter = ((shutterPulseDuration.toIntOrNull() ?: 100) / 10).coerceIn(1, 3000)
@@ -572,6 +580,29 @@ fun DeviceSettingsScreen(
         b[19] = 0                                                            // outputDriveMode (forced by fw)
         b[20] = if (powerSaveIdleMode) 1 else 0
         b[21] = ((fullPressIgnoreGapTenths.toIntOrNull() ?: 3100) / 100).coerceIn(5, 250).toByte()
+        val hex = b.joinToString(" ") { "%02X".format(it) }
+        Log.d(TAG, "Write ${b.size} bytes: $hex")
+        return b
+    }
+
+    // Serialize feeder settings to 12-byte v1 blob
+    fun buildFeederBytes(): ByteArray {
+        val stretch = (pulseStretchMinMs.toIntOrNull() ?: 100).coerceIn(10, 60000)
+        val onMs    = (pumpOnMs.toLongOrNull() ?: 2000L).coerceIn(50L, 3_600_000L)
+        val offMs   = (pumpOffMs.toLongOrNull() ?: 10000L).coerceIn(50L, 3_600_000L)
+        val b = ByteArray(12)
+        b[0]  = 1                                          // version
+        b[1]  = if (feederEnabled) 1 else 0
+        b[2]  = (stretch and 0xFF).toByte()                // pulseStretchMinMs low
+        b[3]  = ((stretch shr 8) and 0xFF).toByte()        // pulseStretchMinMs high
+        b[4]  = (onMs and 0xFF).toByte()                   // pumpOnMs byte0 (LSB)
+        b[5]  = ((onMs shr 8) and 0xFF).toByte()
+        b[6]  = ((onMs shr 16) and 0xFF).toByte()
+        b[7]  = ((onMs shr 24) and 0xFF).toByte()          // pumpOnMs byte3 (MSB)
+        b[8]  = (offMs and 0xFF).toByte()                  // pumpOffMs byte0 (LSB)
+        b[9]  = ((offMs shr 8) and 0xFF).toByte()
+        b[10] = ((offMs shr 16) and 0xFF).toByte()
+        b[11] = ((offMs shr 24) and 0xFF).toByte()         // pumpOffMs byte3 (MSB)
         val hex = b.joinToString(" ") { "%02X".format(it) }
         Log.d(TAG, "Write ${b.size} bytes: $hex")
         return b
@@ -619,6 +650,29 @@ fun DeviceSettingsScreen(
                     camSettingsLoaded = true
                 } else if (camBytes != null) {
                     camSaveStatus = "Unexpected format – reflash firmware"
+                }
+            }
+
+            if (device.deviceType == DeviceType.FEEDER) {
+                val feederBytes = withTimeoutOrNull(5_000) {
+                    gattManager.readCharacteristic(GattUuids.FEEDER_CONFIG)
+                }
+                gattManager.enableNotification(GattUuids.FEEDER_CONFIG_STATUS)
+                if (feederBytes != null && feederBytes.size >= 12 && (feederBytes[0].toInt() and 0xFF) == 1) {
+                    feederEnabled     = feederBytes[1].toInt() != 0
+                    pulseStretchMinMs = (((feederBytes[3].toInt() and 0xFF) shl 8) or
+                                          (feederBytes[2].toInt() and 0xFF)).toString()
+                    pumpOnMs = ((feederBytes[7].toLong() and 0xFF) shl 24 or
+                                ((feederBytes[6].toLong() and 0xFF) shl 16) or
+                                ((feederBytes[5].toLong() and 0xFF) shl 8) or
+                                (feederBytes[4].toLong() and 0xFF)).toString()
+                    pumpOffMs = ((feederBytes[11].toLong() and 0xFF) shl 24 or
+                                 ((feederBytes[10].toLong() and 0xFF) shl 16) or
+                                 ((feederBytes[9].toLong() and 0xFF) shl 8) or
+                                 (feederBytes[8].toLong() and 0xFF)).toString()
+                    feederSettingsLoaded = true
+                } else if (feederBytes != null) {
+                    feederSaveStatus = "Unexpected format – reflash firmware"
                 }
             }
         }
@@ -832,6 +886,110 @@ fun DeviceSettingsScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Save Camera Logic")
+                    }
+                }
+            }
+
+            // ── Feeder logic (FEEDER devices only) ─────────────────────────
+            if (device.deviceType == DeviceType.FEEDER) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Feeder Enabled", style = MaterialTheme.typography.bodyLarge)
+                            Switch(checked = feederEnabled, onCheckedChange = { feederEnabled = it })
+                        }
+                    }
+                }
+
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text("Pulse Stretch", style = MaterialTheme.typography.titleMedium)
+                            NumberField(
+                                label = "Minimum Pulse Width (ms)",
+                                value = pulseStretchMinMs,
+                                onValueChange = { pulseStretchMinMs = it },
+                                maxDigits = 5
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text("Pump Timer", style = MaterialTheme.typography.titleMedium)
+                            NumberField(
+                                label = "Pump On Time (ms)",
+                                value = pumpOnMs,
+                                onValueChange = { pumpOnMs = it },
+                                maxDigits = 7
+                            )
+                            NumberField(
+                                label = "Pump Off Time (ms)",
+                                value = pumpOffMs,
+                                onValueChange = { pumpOffMs = it },
+                                maxDigits = 7
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    feederSaveStatus?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (it.startsWith("Saved")) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val notifDeferred = async(start = CoroutineStart.UNDISPATCHED) {
+                                    gattManager.waitForNotification(
+                                        GattUuids.FEEDER_CONFIG_STATUS, 3000
+                                    )
+                                }
+                                val packet = buildFeederBytes()
+                                val written = gattManager.writeCharacteristic(
+                                    GattUuids.FEEDER_CONFIG, packet
+                                )
+                                if (!written) {
+                                    notifDeferred.cancel()
+                                    feederSaveStatus = "Save failed – not connected"
+                                } else {
+                                    val ack = notifDeferred.await()
+                                    val ackByte = ack?.firstOrNull()?.toInt()?.and(0xFF)
+                                    feederSaveStatus = when (ackByte) {
+                                        0x00 -> "Saved successfully"
+                                        0xE1 -> "Rejected: bad packet format"
+                                        0xE2 -> "Rejected: value out of range"
+                                        0xE3 -> "Rejected: device busy – try again"
+                                        null -> "Sent (no acknowledgment)"
+                                        else -> "Unknown response (0x%02X)".format(ackByte)
+                                    }
+                                }
+                            }
+                        },
+                        enabled = feederSettingsLoaded,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Save Feeder Settings")
                     }
                 }
             }
